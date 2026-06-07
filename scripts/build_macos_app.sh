@@ -2,7 +2,10 @@
 set -euo pipefail
 
 PROJECT_DIR="${0:A:h:h}"
-PYINSTALLER="${PYINSTALLER:-pyinstaller}"
+# python.org 版 Python 3.12 を使う（Tcl/Tk 8.6 を内蔵しており、
+# 他の Mac でも Tcl/Tk 不足でクラッシュしない）。
+PYTHON="${PYTHON:-/Library/Frameworks/Python.framework/Versions/3.12/bin/python3}"
+PYINSTALLER="${PYINSTALLER:-$PYTHON -m PyInstaller}"
 export PYINSTALLER_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-$PROJECT_DIR/.build/pyinstaller-config}"
 
 cd "$PROJECT_DIR"
