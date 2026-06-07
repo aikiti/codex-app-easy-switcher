@@ -27,6 +27,7 @@ from codex_model_launcher.core import (
     model_kind,
     quit_codex_app,
     read_codex_state,
+    remove_legacy_profile_from_config,
     run_checks,
     save_settings,
     state_matches_target,
@@ -684,6 +685,9 @@ class CodexAppLauncher:
             )
             return
         ok, output = switch_codex_connection(ollama_path, mode, model)
+        if ok and mode == "ollama":
+            # 新しい Codex が拒否するレガシーな profile 行を取り除く（互換処理）。
+            remove_legacy_profile_from_config()
         if ok and not close_after and not codex_app_is_running():
             launch_codex_app()
         state = read_codex_state()

@@ -14,6 +14,9 @@ from typing import Callable, Iterable, Sequence
 
 APP_NAME = "CodexModelLauncher"
 DEFAULT_CODEX_OLLAMA_MODEL = "gpt-oss:120b-cloud"
+# Ollama Launch が config.toml に書き込むプロファイル名。新しい Codex は
+# トップレベルの `profile = "..."` を廃止したため、切り替え後にこの行だけ取り除く。
+OLLAMA_LAUNCH_PROFILE = "ollama-launch-codex-app"
 MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
 MAC_CODEX_APP = Path("/Applications/Codex.app")
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
@@ -258,6 +261,57 @@ def read_codex_state(path: Path | None = None) -> CodexState:
         return CodexState("unknown", detail="Codex設定ファイルが見つかりません。")
     except OSError as exc:
         return CodexState("unknown", detail=f"Codex設定を読み取れません: {exc}")
+
+
+def strip_top_level_profile(
+    config_text: str,
+    profile_name: str = OLLAMA_LAUNCH_PROFILE,
+) -> tuple[str, bool]:
+    """トップレベルの `profile = "<profile_name>"` 行だけを取り除く。
+
+    新しい Codex はトップレベルの `profile = "..."` を廃止し、設定読み込み時に
+    `failed to resolve feature override precedence` エラーを出す。Ollama Launch は
+    このキーを書き込むため、切り替え後に取り除いて互換性を保つ。
+    `[profiles.<name>]` セクション（最初の `[` 以降）には触れない。
+    戻り値は (新しい本文, 変更したか)。
+    """
+    head, separator, rest = config_text.partition("\n[")
+    pattern = re.compile(
+        r'(?m)^[ \t]*profile[ \t]*=[ \t]*"'
+        + re.escape(profile_name)
+        + r'"[ \t]*\r?\n?'
+    )
+    new_head, count = pattern.subn("", head)
+    if count == 0:
+        return config_text, False
+    return new_head + separator + rest, True
+
+
+def remove_legacy_profile_from_config(
+    path: Path | None = None,
+    profile_name: str = OLLAMA_LAUNCH_PROFILE,
+) -> bool:
+    """config.toml から廃止された `profile = "..."` 行を取り除く。変更したら True。
+
+    Ollama 切り替え（`ollama launch codex-app`）の直後に呼び出して、新しい Codex で
+    プロンプトが通るようにする。本アプリは通常 config.toml を書き換えないが、これは
+    Ollama Launch が残すレガシー設定を打ち消す最小限の互換処理。
+    """
+    path = path or codex_config_file()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    new_text, changed = strip_top_level_profile(text, profile_name)
+    if not changed:
+        return False
+    temporary = path.with_suffix(".tmp")
+    try:
+        temporary.write_text(new_text, encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        return False
+    return True
 
 
 def state_matches_target(

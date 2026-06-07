@@ -23,9 +23,11 @@ from codex_model_launcher.core import (
     parse_ollama_models,
     parse_version,
     quit_codex_app,
+    remove_legacy_profile_from_config,
     save_settings,
     settings_file,
     state_matches_target,
+    strip_top_level_profile,
     switch_codex_connection,
 )
 
@@ -105,6 +107,54 @@ class CoreTests(unittest.TestCase):
             '[profiles.ollama-launch-codex-app]\nmodel = "other"\n'
         )
         self.assertEqual(state.mode, "normal")
+
+    def test_strip_top_level_profile_removes_legacy_selector(self) -> None:
+        config = (
+            'model = "gpt-oss:120b-cloud"\n'
+            'model_provider = "ollama-launch-codex-app"\n'
+            'profile = "ollama-launch-codex-app"\n'
+            'model_catalog_json = "/x.json"\n'
+            "\n"
+            "[profiles.ollama-launch-codex-app]\n"
+            'model = "gpt-oss:120b-cloud"\n'
+            "\n"
+            "[model_providers.ollama-launch-codex-app]\n"
+            'name = "Ollama"\n'
+        )
+        new_text, changed = strip_top_level_profile(config)
+        self.assertTrue(changed)
+        # トップレベルの profile セレクタは消える。
+        self.assertNotIn('\nprofile = "ollama-launch-codex-app"', "\n" + new_text)
+        # プロバイダ指定とセクション定義は残る。
+        self.assertIn('model_provider = "ollama-launch-codex-app"', new_text)
+        self.assertIn("[profiles.ollama-launch-codex-app]", new_text)
+        self.assertIn("[model_providers.ollama-launch-codex-app]", new_text)
+        # 取り除いた後も Ollama 状態として判定できる。
+        self.assertEqual(parse_codex_state(new_text).mode, "ollama")
+
+    def test_strip_top_level_profile_noop_when_absent(self) -> None:
+        config = 'model = "gpt-5.5"\nmodel_provider = "openai"\n'
+        new_text, changed = strip_top_level_profile(config)
+        self.assertFalse(changed)
+        self.assertEqual(new_text, config)
+
+    def test_remove_legacy_profile_rewrites_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                'model = "gpt-oss:120b-cloud"\n'
+                'model_provider = "ollama-launch-codex-app"\n'
+                'profile = "ollama-launch-codex-app"\n'
+                "[features]\n"
+                "multi_agent = true\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(remove_legacy_profile_from_config(path))
+            updated = path.read_text(encoding="utf-8")
+            self.assertNotIn('profile = "ollama-launch-codex-app"', updated)
+            self.assertIn("[features]", updated)
+            # 2回目は変更なし（冪等）。
+            self.assertFalse(remove_legacy_profile_from_config(path))
 
     def test_state_matches_target(self) -> None:
         normal = parse_codex_state('model = "gpt-5.5"\nmodel_provider = "openai"\n')
