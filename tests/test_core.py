@@ -61,11 +61,13 @@ class CoreTests(unittest.TestCase):
 
     def test_platform_settings_locations(self) -> None:
         home = Path("example-home")
-        self.assertIn("Library/Application Support", str(settings_file("Darwin", home)))
-        self.assertTrue(
-            str(settings_file("Windows", home)).endswith(
-                "CodexModelLauncher/settings.json"
-            )
+        self.assertEqual(
+            settings_file("Darwin", home).parts[-4:],
+            ("Library", "Application Support", "CodexModelLauncher", "settings.json"),
+        )
+        self.assertEqual(
+            settings_file("Windows", home).parts[-2:],
+            ("CodexModelLauncher", "settings.json"),
         )
 
     def test_model_validation(self) -> None:
