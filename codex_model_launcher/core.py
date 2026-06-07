@@ -27,6 +27,7 @@ MAC_OLLAMA_CANDIDATES = (
 class AppSettings:
     install_model: str = ""
     window_geometry: str = "900x720"
+    codex_model: str = DEFAULT_CODEX_OLLAMA_MODEL
 
 
 @dataclass
@@ -81,8 +82,15 @@ def load_settings(path: Path | None = None) -> AppSettings:
     model = str(data.get("install_model", "")).strip()
     if model and not is_valid_model(model):
         model = ""
+    codex_model = str(data.get("codex_model", DEFAULT_CODEX_OLLAMA_MODEL)).strip()
+    if not is_valid_model(codex_model):
+        codex_model = DEFAULT_CODEX_OLLAMA_MODEL
     geometry = str(data.get("window_geometry", AppSettings.window_geometry))
-    return AppSettings(install_model=model, window_geometry=geometry)
+    return AppSettings(
+        install_model=model,
+        window_geometry=geometry,
+        codex_model=codex_model,
+    )
 
 
 def save_settings(settings: AppSettings, path: Path | None = None) -> Path:
@@ -180,11 +188,15 @@ def read_codex_state(path: Path | None = None) -> CodexState:
         return CodexState("unknown", detail=f"Codex設定を読み取れません: {exc}")
 
 
-def state_matches_target(state: CodexState, mode: str) -> bool:
+def state_matches_target(
+    state: CodexState,
+    mode: str,
+    model: str = DEFAULT_CODEX_OLLAMA_MODEL,
+) -> bool:
     if mode == "normal":
         return state.mode == "normal"
     if mode == "ollama":
-        return state.mode == "ollama" and state.model == DEFAULT_CODEX_OLLAMA_MODEL
+        return state.mode == "ollama" and state.model == model
     return False
 
 
@@ -257,16 +269,22 @@ def quit_codex_app(
     return False, "Codex Appの終了を待ちましたが、まだ起動しています。"
 
 
-def build_switch_args(ollama_path: str, mode: str) -> list[str]:
+def build_switch_args(
+    ollama_path: str,
+    mode: str,
+    model: str = DEFAULT_CODEX_OLLAMA_MODEL,
+) -> list[str]:
     if not ollama_path:
         raise ValueError("Ollamaが見つかりません。")
     if mode == "ollama":
+        if not is_valid_model(model):
+            raise ValueError("モデル名に使用できない文字が含まれています。")
         return [
             ollama_path,
             "launch",
             "codex-app",
             "--model",
-            DEFAULT_CODEX_OLLAMA_MODEL,
+            model.strip(),
             "--yes",
         ]
     if mode == "normal":
@@ -285,9 +303,10 @@ def build_pull_args(ollama_path: str, model: str) -> list[str]:
 def switch_codex_connection(
     ollama_path: str,
     mode: str,
+    model: str = DEFAULT_CODEX_OLLAMA_MODEL,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> tuple[bool, str]:
-    return _run(build_switch_args(ollama_path, mode), timeout=120, runner=runner)
+    return _run(build_switch_args(ollama_path, mode, model), timeout=120, runner=runner)
 
 
 def launch_codex_app(

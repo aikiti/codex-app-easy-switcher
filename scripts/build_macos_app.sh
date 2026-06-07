@@ -15,9 +15,9 @@ cd "$PROJECT_DIR"
   --osx-bundle-identifier "local.study.codex-app-easy-switcher" \
   app.py
 
-/usr/bin/plutil -replace CFBundleShortVersionString -string "0.1.0" \
+/usr/bin/plutil -replace CFBundleShortVersionString -string "0.2.0" \
   "dist/Codex App かんたん切り替え.app/Contents/Info.plist"
-/usr/bin/plutil -replace CFBundleVersion -string "1" \
+/usr/bin/plutil -replace CFBundleVersion -string "2" \
   "dist/Codex App かんたん切り替え.app/Contents/Info.plist"
 /usr/bin/plutil -replace LSMinimumSystemVersion -string "12.0" \
   "dist/Codex App かんたん切り替え.app/Contents/Info.plist"

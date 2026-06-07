@@ -14,6 +14,9 @@ delegated to `ollama launch codex-app`.
 - No `shell=True`, `os.system`, `eval`, or `exec`
 - External processes use argument lists
 - User-entered model names are allowlisted
+- Selected Codex models are validated again before launch
+- Cloud models are prioritized and local models require explicit warnings
+- Selecting a model alone never restarts Codex App or changes Codex settings
 - Confirmation before model downloads
 - Confirmation before closing a running Codex App
 - Restore reminder when exiting in Ollama mode

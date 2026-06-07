@@ -19,6 +19,7 @@ from codex_model_launcher.core import (
     codex_app_is_running,
     detect_ollama,
     format_checks,
+    is_cloud_model,
     is_valid_model,
     launch_codex_app,
     list_ollama_models,
@@ -37,6 +38,207 @@ SWITCH_WARNING = (
     "Codex Appをいったん終了して、接続先を切り替えます。\n"
     "入力途中の内容がある場合は失われる可能性があります。続けますか？"
 )
+
+LOCAL_MODEL_WARNING = (
+    "このローカルモデルでは、Codex Appのファイル編集やエージェント機能が"
+    "正常に動作しない可能性があります。\n\n"
+    f"問題が発生した場合は、推奨モデル {DEFAULT_CODEX_OLLAMA_MODEL} に戻してください。\n\n"
+    "このモデルでCodex Appを起動しますか？"
+)
+
+
+class ModelSelectionDialog(tk.Toplevel):
+    def __init__(
+        self,
+        parent: tk.Tk,
+        models: list[OllamaModel],
+        current_model: str,
+    ) -> None:
+        super().__init__(parent)
+        self.result: str | None = None
+        self.models = models
+        self.manual_model_var = tk.StringVar(value=current_model)
+        self.show_advanced_var = tk.BooleanVar(value=False)
+
+        self.title("Codex Appで使うモデルを変更")
+        self.geometry("720x620")
+        self.minsize(680, 560)
+        self.transient(parent)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        outer = ttk.Frame(self, padding=18)
+        outer.pack(fill="both", expand=True)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(3, weight=1)
+
+        ttk.Label(
+            outer,
+            text="Codex Appで使うOllamaモデルを選びます",
+            font=("", 16, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            outer,
+            text=(
+                "モデルを選ぶだけではCodex Appは再起動しません。"
+                " Cloudモデルを優先して表示しています。"
+            ),
+        ).grid(row=1, column=0, sticky="w", pady=(4, 14))
+
+        recommended = ttk.LabelFrame(outer, text=" 推奨・動作確認済み ", padding=12)
+        recommended.grid(row=2, column=0, sticky="ew")
+        recommended.columnconfigure(0, weight=1)
+        ttk.Label(
+            recommended,
+            text=DEFAULT_CODEX_OLLAMA_MODEL,
+            font=("", 13, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            recommended,
+            text="Ollama Cloudモデル。初めて使う方におすすめです。",
+        ).grid(row=1, column=0, sticky="w", pady=(3, 0))
+        ttk.Button(
+            recommended,
+            text="推奨モデルを選ぶ",
+            command=lambda: self._choose(DEFAULT_CODEX_OLLAMA_MODEL),
+        ).grid(row=0, column=1, rowspan=2, padx=(12, 0))
+
+        self.cloud_frame = ttk.LabelFrame(outer, text=" その他のCloudモデル ", padding=10)
+        self.cloud_frame.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
+        self.cloud_frame.columnconfigure(0, weight=1)
+        self.cloud_frame.rowconfigure(0, weight=1)
+        self.cloud_tree = self._create_model_tree(self.cloud_frame)
+        self.cloud_tree.grid(row=0, column=0, sticky="nsew")
+        self.cloud_tree.bind("<Double-1>", lambda _event: self._choose_from_tree(self.cloud_tree))
+        ttk.Button(
+            self.cloud_frame,
+            text="選択したCloudモデルを使う",
+            command=lambda: self._choose_from_tree(self.cloud_tree),
+        ).grid(row=1, column=0, sticky="e", pady=(8, 0))
+
+        ttk.Checkbutton(
+            outer,
+            text="詳細設定を表示（ローカルモデル・モデル名の手入力）",
+            variable=self.show_advanced_var,
+            command=self._toggle_advanced,
+        ).grid(row=4, column=0, sticky="w", pady=(12, 0))
+
+        self.advanced_frame = ttk.LabelFrame(outer, text=" 詳細設定・上級者向け ", padding=10)
+        self.advanced_frame.columnconfigure(0, weight=1)
+        self.advanced_frame.rowconfigure(1, weight=1)
+        ttk.Label(
+            self.advanced_frame,
+            text=(
+                "ローカルモデルでは、Codex Appのエージェント機能が"
+                "正常に動作しない場合があります。"
+            ),
+            foreground="#a33b20",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        self.local_tree = self._create_model_tree(self.advanced_frame)
+        self.local_tree.grid(row=1, column=0, sticky="nsew")
+        self.local_tree.bind("<Double-1>", lambda _event: self._choose_from_tree(self.local_tree))
+        ttk.Button(
+            self.advanced_frame,
+            text="選択したローカルモデルを使う",
+            command=lambda: self._choose_from_tree(self.local_tree),
+        ).grid(row=2, column=0, sticky="e", pady=(6, 10))
+        manual = ttk.Frame(self.advanced_frame)
+        manual.grid(row=3, column=0, sticky="ew")
+        manual.columnconfigure(1, weight=1)
+        ttk.Label(manual, text="モデル名を手動入力").grid(row=0, column=0, padx=(0, 8))
+        ttk.Entry(manual, textvariable=self.manual_model_var).grid(
+            row=0, column=1, sticky="ew"
+        )
+        ttk.Button(manual, text="入力したモデルを選ぶ", command=self._choose_manual).grid(
+            row=0, column=2, padx=(8, 0)
+        )
+
+        ttk.Button(outer, text="キャンセル", command=self.destroy).grid(
+            row=6, column=0, sticky="e", pady=(14, 0)
+        )
+        self._populate_trees()
+
+    @staticmethod
+    def _create_model_tree(parent: ttk.Frame) -> ttk.Treeview:
+        tree = ttk.Treeview(
+            parent,
+            columns=("name", "size"),
+            show="headings",
+            height=6,
+            selectmode="browse",
+        )
+        tree.heading("name", text="モデル名")
+        tree.heading("size", text="サイズ")
+        tree.column("name", width=470)
+        tree.column("size", width=100, stretch=False)
+        return tree
+
+    def _populate_trees(self) -> None:
+        cloud_models = sorted(
+            (
+                model
+                for model in self.models
+                if is_cloud_model(model.name)
+                and model.name != DEFAULT_CODEX_OLLAMA_MODEL
+            ),
+            key=lambda model: model.name.lower(),
+        )
+        local_models = sorted(
+            (model for model in self.models if not is_cloud_model(model.name)),
+            key=lambda model: model.name.lower(),
+        )
+        for tree, items in ((self.cloud_tree, cloud_models), (self.local_tree, local_models)):
+            for model in items:
+                tree.insert("", "end", values=(model.name, model.size))
+
+    def _toggle_advanced(self) -> None:
+        if self.show_advanced_var.get():
+            self.cloud_frame.grid_forget()
+            self.advanced_frame.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
+            self.geometry("720x680")
+        else:
+            self.advanced_frame.grid_forget()
+            self.cloud_frame.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
+            self.geometry("720x620")
+
+    def _choose_from_tree(self, tree: ttk.Treeview) -> None:
+        selection = tree.selection()
+        if not selection:
+            messagebox.showinfo(
+                "モデルを選択してください",
+                "一覧から使用するモデルを選択してください。",
+                parent=self,
+            )
+            return
+        values = tree.item(selection[0], "values")
+        if values:
+            self._choose(str(values[0]))
+
+    def _choose_manual(self) -> None:
+        model = self.manual_model_var.get().strip()
+        if not is_valid_model(model):
+            messagebox.showerror(
+                "モデル名を確認してください",
+                "モデル名には英数字と . _ : / - のみ使用できます（200文字以内）。",
+                parent=self,
+            )
+            return
+        self._choose(model)
+
+    def _choose(self, model: str) -> None:
+        if not is_cloud_model(model) and not messagebox.askyesno(
+            "ローカルモデルを選択します",
+            LOCAL_MODEL_WARNING.replace(
+                "このモデルでCodex Appを起動しますか？",
+                "このモデルを選択しますか？",
+            ),
+            parent=self,
+        ):
+            return
+        self.result = model
+        self.destroy()
 
 
 class ExitChoiceDialog(tk.Toplevel):
@@ -91,6 +293,8 @@ class CodexAppLauncher:
         self.root = root
         self.settings = load_settings()
         self.install_model_var = tk.StringVar(value=self.settings.install_model)
+        self.selected_model_var = tk.StringVar(value=self.settings.codex_model)
+        self.selected_model_detail_var = tk.StringVar(value="")
         self.state_var = tk.StringVar(value="現在の状態を確認しています...")
         self.state_detail_var = tk.StringVar(value="")
         self.model_summary_var = tk.StringVar(value="モデル一覧を確認していません。")
@@ -106,7 +310,7 @@ class CodexAppLauncher:
     def _configure_window(self) -> None:
         self.root.title("Codex App かんたん切り替え")
         self.root.geometry(self.settings.window_geometry)
-        self.root.minsize(820, 650)
+        self.root.minsize(860, 700)
         style = ttk.Style(self.root)
         if "aqua" in style.theme_names():
             style.theme_use("aqua")
@@ -165,18 +369,48 @@ class CodexAppLauncher:
         self.normal_button.grid(row=0, column=0, sticky="ew", padx=(0, 7))
         self.ollama_button = ttk.Button(
             action_frame,
-            text=f"{DEFAULT_CODEX_OLLAMA_MODEL}で起動",
+            text="選択中のOllamaモデルで起動",
             style="Secondary.TButton",
             command=lambda: self._request_switch("ollama"),
         )
         self.ollama_button.grid(row=0, column=1, sticky="ew", padx=(7, 0))
+
+        selected_frame = ttk.Frame(action_frame, padding=(0, 12, 0, 0))
+        selected_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
+        selected_frame.columnconfigure(0, weight=1)
+        ttk.Label(selected_frame, text="選択中のOllamaモデル", font=("", 11, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            selected_frame,
+            textvariable=self.selected_model_var,
+            font=("", 13, "bold"),
+        ).grid(row=1, column=0, sticky="w", pady=(3, 0))
+        ttk.Label(selected_frame, textvariable=self.selected_model_detail_var).grid(
+            row=2, column=0, sticky="w", pady=(2, 0)
+        )
+        selected_buttons = ttk.Frame(selected_frame)
+        selected_buttons.grid(row=0, column=1, rowspan=3, padx=(12, 0))
+        self.change_model_button = ttk.Button(
+            selected_buttons,
+            text="モデルを変更",
+            command=self._choose_codex_model,
+        )
+        self.change_model_button.pack(side="left")
+        self.reset_model_button = ttk.Button(
+            selected_buttons,
+            text="推奨モデルに戻す",
+            command=self._reset_recommended_model,
+        )
+        self.reset_model_button.pack(side="left", padx=(8, 0))
+
         ttk.Label(
             action_frame,
             text=(
-                "通常のCodex GPTとOllama Cloudを使い分けます。"
+                "通常のCodex GPTと選択したOllamaモデルを使い分けます。"
                 " 切り替えはOllama公式機能で行います。"
             ),
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
         self.ollama_missing = ttk.Frame(tab)
         ttk.Label(
@@ -287,6 +521,8 @@ class CodexAppLauncher:
             self.refresh_button,
             self.models_refresh_button,
             self.install_button,
+            self.change_model_button,
+            self.reset_model_button,
         ):
             widget.configure(state=state)
 
@@ -322,12 +558,81 @@ class CodexAppLauncher:
             self.state_var.set("状態を確認できません")
             self.state_detail_var.set(state.detail)
 
+    def _refresh_selected_model_display(self) -> None:
+        model = self.settings.codex_model
+        self.selected_model_var.set(model)
+        kind = model_kind(model)
+        available = any(item.name == model for item in self.models)
+        status = "利用可能" if available else "未準備・モデル管理でインストールしてください"
+        recommendation = " / 推奨" if model == DEFAULT_CODEX_OLLAMA_MODEL else ""
+        self.selected_model_detail_var.set(f"{kind}{recommendation} / {status}")
+
+    def _choose_codex_model(self) -> None:
+        if self.busy:
+            return
+        dialog = ModelSelectionDialog(self.root, self.models, self.settings.codex_model)
+        self.root.wait_window(dialog)
+        if not dialog.result:
+            return
+        self.settings.codex_model = dialog.result
+        self._save_settings()
+        self._refresh_selected_model_display()
+        self._replace_text(
+            self.switch_log,
+            (
+                f"Codex App用モデルを {dialog.result} に変更しました。\n"
+                "まだCodex Appの接続先は切り替えていません。"
+            ),
+        )
+
+    def _reset_recommended_model(self) -> None:
+        if self.busy:
+            return
+        self.settings.codex_model = DEFAULT_CODEX_OLLAMA_MODEL
+        self._save_settings()
+        self._refresh_selected_model_display()
+        self._replace_text(
+            self.switch_log,
+            (
+                f"Codex App用モデルを推奨モデル {DEFAULT_CODEX_OLLAMA_MODEL} に戻しました。\n"
+                "まだCodex Appの接続先は切り替えていません。"
+            ),
+        )
+
     def _request_switch(self, mode: str) -> None:
         if self.busy:
             return
         ollama_path = detect_ollama()
         current_state = read_codex_state()
-        if state_matches_target(current_state, mode) and (
+        selected_model = self.settings.codex_model
+        if mode == "ollama" and not ollama_path:
+            messagebox.showerror(
+                "Ollamaが見つかりません",
+                "Ollamaをインストールしてから、状態を再確認してください。",
+                parent=self.root,
+            )
+            return
+        if mode == "ollama" and not any(
+            model.name == selected_model for model in self.models
+        ):
+            self.install_model_var.set(selected_model)
+            self.tabs.select(self.models_tab)
+            messagebox.showwarning(
+                "モデルの準備が必要です",
+                (
+                    f"{selected_model} がモデル一覧にありません。\n"
+                    "モデル管理タブで内容を確認し、「モデルをインストール」を押してください。"
+                ),
+                parent=self.root,
+            )
+            return
+        if mode == "ollama" and not is_cloud_model(selected_model) and not messagebox.askyesno(
+            "ローカルモデルで起動します",
+            LOCAL_MODEL_WARNING,
+            parent=self.root,
+        ):
+            return
+        if state_matches_target(current_state, mode, selected_model) and (
             mode == "normal" or ollama_path is not None
         ):
             ok, message = launch_codex_app()
@@ -351,44 +656,37 @@ class CodexAppLauncher:
                 parent=self.root,
             )
             return
-        if mode == "ollama" and not any(
-            model.name == DEFAULT_CODEX_OLLAMA_MODEL for model in self.models
-        ):
-            self.install_model_var.set(DEFAULT_CODEX_OLLAMA_MODEL)
-            self.tabs.select(self.models_tab)
-            messagebox.showwarning(
-                "モデルの準備が必要です",
-                (
-                    f"{DEFAULT_CODEX_OLLAMA_MODEL} がモデル一覧にありません。\n"
-                    "モデル管理タブで内容を確認し、「モデルをインストール」を押してください。"
-                ),
-                parent=self.root,
-            )
-            return
         if codex_app_is_running() and not messagebox.askyesno(
             "Codex Appを切り替えます", SWITCH_WARNING, parent=self.root
         ):
             return
-        label = "通常のCodex GPT" if mode == "normal" else DEFAULT_CODEX_OLLAMA_MODEL
+        label = "通常のCodex GPT" if mode == "normal" else selected_model
         self._set_busy(True)
         self._replace_text(self.switch_log, f"{label}へ切り替えています。しばらくお待ちください...")
         threading.Thread(
-            target=self._switch_worker, args=(ollama_path, mode, False), daemon=True
+            target=self._switch_worker,
+            args=(ollama_path, mode, selected_model, False),
+            daemon=True,
         ).start()
 
-    def _switch_worker(self, ollama_path: str, mode: str, close_after: bool) -> None:
+    def _switch_worker(
+        self,
+        ollama_path: str,
+        mode: str,
+        model: str,
+        close_after: bool,
+    ) -> None:
         quit_ok, quit_message = quit_codex_app()
         if not quit_ok:
             self.root.after(
                 0, lambda: self._finish_switch(False, quit_message, close_after)
             )
             return
-        ok, output = switch_codex_connection(ollama_path, mode)
+        ok, output = switch_codex_connection(ollama_path, mode, model)
         if ok and not close_after and not codex_app_is_running():
             launch_codex_app()
         state = read_codex_state()
-        expected = mode
-        if ok and state.mode != expected:
+        if ok and not state_matches_target(state, mode, model):
             ok = False
             output = (
                 (output + "\n") if output else ""
@@ -434,17 +732,22 @@ class CodexAppLauncher:
             messagebox.showerror("Ollama接続エラー", output, parent=self.root)
 
     def _show_models(self, models: list[OllamaModel]) -> None:
-        self.models = models
+        self.models = sorted(
+            models,
+            key=lambda model: (not is_cloud_model(model.name), model.name.lower()),
+        )
         for item in self.model_tree.get_children():
             self.model_tree.delete(item)
-        for model in models:
+        for model in self.models:
             self.model_tree.insert(
                 "", "end", values=(model.kind, model.name, model.size, model.modified)
             )
-        cloud_count = sum(model.kind == "Cloud" for model in models)
+        cloud_count = sum(model.kind == "Cloud" for model in self.models)
         self.model_summary_var.set(
-            f"インストール済み: {len(models)}件（Cloud {cloud_count}件 / ローカル {len(models) - cloud_count}件）"
+            f"インストール済み: {len(self.models)}件"
+            f"（Cloud {cloud_count}件 / ローカル {len(self.models) - cloud_count}件）"
         )
+        self._refresh_selected_model_display()
 
     def _request_pull(self) -> None:
         model = self.install_model_var.get().strip()
@@ -581,7 +884,9 @@ class CodexAppLauncher:
         self._set_busy(True)
         self._replace_text(self.switch_log, "通常のCodexへ戻しています...")
         threading.Thread(
-            target=self._switch_worker, args=(ollama_path, "normal", True), daemon=True
+            target=self._switch_worker,
+            args=(ollama_path, "normal", self.settings.codex_model, True),
+            daemon=True,
         ).start()
 
     def _save_and_destroy(self) -> None:

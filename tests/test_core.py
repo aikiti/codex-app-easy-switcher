@@ -37,8 +37,23 @@ class CoreTests(unittest.TestCase):
     def test_invalid_saved_model_is_cleared(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
-            path.write_text(json.dumps({"install_model": "bad;name"}))
+            path.write_text(
+                json.dumps(
+                    {
+                        "install_model": "bad;name",
+                        "codex_model": "also;bad",
+                    }
+                )
+            )
             self.assertEqual(load_settings(path).install_model, "")
+            self.assertEqual(load_settings(path).codex_model, DEFAULT_CODEX_OLLAMA_MODEL)
+
+    def test_selected_codex_model_is_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            settings = AppSettings(codex_model="minimax-m3:cloud")
+            save_settings(settings, path)
+            self.assertEqual(load_settings(path).codex_model, "minimax-m3:cloud")
 
     def test_platform_settings_locations(self) -> None:
         home = Path("example-home")
@@ -96,6 +111,7 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(state_matches_target(normal, "normal"))
         self.assertTrue(state_matches_target(ollama, "ollama"))
         self.assertFalse(state_matches_target(other_ollama, "ollama"))
+        self.assertTrue(state_matches_target(other_ollama, "ollama", "qwen2.5-coder:7b"))
 
     def test_build_switch_args(self) -> None:
         self.assertEqual(
@@ -119,6 +135,19 @@ class CoreTests(unittest.TestCase):
                 "--yes",
             ],
         )
+        self.assertEqual(
+            build_switch_args("/usr/local/bin/ollama", "ollama", "minimax-m3:cloud"),
+            [
+                "/usr/local/bin/ollama",
+                "launch",
+                "codex-app",
+                "--model",
+                "minimax-m3:cloud",
+                "--yes",
+            ],
+        )
+        with self.assertRaises(ValueError):
+            build_switch_args("/usr/local/bin/ollama", "ollama", "bad;model")
 
     def test_invalid_switch_mode_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -135,10 +164,16 @@ class CoreTests(unittest.TestCase):
     def test_switch_uses_argument_list_without_shell(self) -> None:
         runner = Mock()
         runner.return_value = Mock(returncode=0, stdout="ok", stderr="")
-        ok, _ = switch_codex_connection("/usr/local/bin/ollama", "ollama", runner=runner)
+        ok, _ = switch_codex_connection(
+            "/usr/local/bin/ollama",
+            "ollama",
+            "minimax-m3:cloud",
+            runner=runner,
+        )
         self.assertTrue(ok)
         args, kwargs = runner.call_args
         self.assertIsInstance(args[0], list)
+        self.assertIn("minimax-m3:cloud", args[0])
         self.assertFalse(kwargs["shell"])
 
     def test_quit_codex_app_uses_graceful_applescript(self) -> None:
