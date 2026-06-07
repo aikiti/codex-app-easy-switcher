@@ -108,7 +108,7 @@ def style_document(path: Path, label: str) -> None:
 
     subtitle = first.insert_paragraph_before()
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = subtitle.add_run(f"バージョン 0.2.0  |  {label}")
+    run = subtitle.add_run(f"バージョン 0.3.0  |  {label}")
     set_font(run, size=9.5)
     run.font.color.rgb = RGBColor(90, 110, 120)
 

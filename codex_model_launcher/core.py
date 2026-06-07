@@ -21,6 +21,27 @@ MAC_OLLAMA_CANDIDATES = (
     Path("/usr/local/bin/ollama"),
     Path("/opt/homebrew/bin/ollama"),
 )
+WINDOWS_CODEX_EXISTS_SCRIPT = (
+    "$app = Get-StartApps | Where-Object { $_.Name -like 'Codex*' } | "
+    "Select-Object -First 1; "
+    "if ($null -ne $app) { exit 0 } else { exit 1 }"
+)
+WINDOWS_CODEX_RUNNING_SCRIPT = (
+    "if (Get-Process -Name 'Codex' -ErrorAction SilentlyContinue) "
+    "{ exit 0 } else { exit 1 }"
+)
+WINDOWS_CODEX_QUIT_SCRIPT = (
+    "$closed = $false; "
+    "Get-Process -Name 'Codex' -ErrorAction SilentlyContinue | ForEach-Object { "
+    "if ($_.MainWindowHandle -ne 0 -and $_.CloseMainWindow()) { $closed = $true } }; "
+    "if ($closed) { exit 0 } else { exit 1 }"
+)
+WINDOWS_CODEX_LAUNCH_SCRIPT = (
+    "$app = Get-StartApps | Where-Object { $_.Name -like 'Codex*' } | "
+    "Select-Object -First 1; "
+    "if ($null -eq $app) { exit 1 }; "
+    "Start-Process explorer.exe -ArgumentList ('shell:AppsFolder\\' + $app.AppID)"
+)
 
 
 @dataclass
@@ -106,18 +127,69 @@ def save_settings(settings: AppSettings, path: Path | None = None) -> Path:
 
 
 def detect_ollama() -> str | None:
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
         for candidate in MAC_OLLAMA_CANDIDATES:
             if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    elif system == "Windows":
+        candidates = []
+        if os.environ.get("LOCALAPPDATA"):
+            candidates.append(
+                Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Ollama" / "ollama.exe"
+            )
+        if os.environ.get("ProgramFiles"):
+            candidates.append(Path(os.environ["ProgramFiles"]) / "Ollama" / "ollama.exe")
+        for candidate in candidates:
+            if candidate.is_file():
                 return str(candidate)
     return shutil.which("ollama")
 
 
-def codex_app_exists(system: str | None = None) -> bool:
+def detect_windows_powershell() -> str | None:
+    for name in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def build_windows_powershell_args(powershell_path: str, script: str) -> list[str]:
+    return [
+        powershell_path,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+    ]
+
+
+def subprocess_window_options(system: str | None = None) -> dict[str, int]:
+    system = system or platform.system()
+    if system == "Windows":
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    return {}
+
+
+def codex_app_exists(
+    system: str | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> bool:
     system = system or platform.system()
     if system == "Darwin":
         return MAC_CODEX_APP.is_dir()
-    return True
+    if system == "Windows":
+        powershell = detect_windows_powershell()
+        if not powershell:
+            return False
+        ok, _ = _run(
+            build_windows_powershell_args(powershell, WINDOWS_CODEX_EXISTS_SCRIPT),
+            timeout=10,
+            runner=runner,
+        )
+        return ok
+    return False
 
 
 def codex_config_file(home: Path | None = None) -> Path:
@@ -212,6 +284,7 @@ def _run(
             text=True,
             timeout=timeout,
             shell=False,
+            **subprocess_window_options(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, str(exc)
@@ -226,14 +299,24 @@ def codex_app_is_running(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> bool:
     system = system or platform.system()
-    if system != "Darwin":
-        return False
-    ok, _ = _run(
-        ["/usr/bin/pgrep", "-f", "^/Applications/Codex.app/Contents/MacOS/Codex$"],
-        timeout=5,
-        runner=runner,
-    )
-    return ok
+    if system == "Darwin":
+        ok, _ = _run(
+            ["/usr/bin/pgrep", "-f", "^/Applications/Codex.app/Contents/MacOS/Codex$"],
+            timeout=5,
+            runner=runner,
+        )
+        return ok
+    if system == "Windows":
+        powershell = detect_windows_powershell()
+        if not powershell:
+            return False
+        ok, _ = _run(
+            build_windows_powershell_args(powershell, WINDOWS_CODEX_RUNNING_SCRIPT),
+            timeout=5,
+            runner=runner,
+        )
+        return ok
+    return False
 
 
 def quit_codex_app(
@@ -243,24 +326,36 @@ def quit_codex_app(
     sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[bool, str]:
     system = system or platform.system()
-    if system != "Darwin":
-        return False, "現在はmacOS版のみ対応しています。"
+    if system not in ("Darwin", "Windows"):
+        return False, "このOSには対応していません。"
     if not codex_app_is_running(system=system, runner=runner):
         return True, "Codex Appは起動していません。"
-    ok, output = _run(
-        ["/usr/bin/osascript", "-e", 'tell application "Codex" to quit'],
-        timeout=10,
-        runner=runner,
-    )
+    if system == "Darwin":
+        quit_args = ["/usr/bin/osascript", "-e", 'tell application "Codex" to quit']
+    else:
+        powershell = detect_windows_powershell()
+        if not powershell:
+            return False, "Windows PowerShellが見つかりません。"
+        quit_args = build_windows_powershell_args(
+            powershell,
+            WINDOWS_CODEX_QUIT_SCRIPT,
+        )
+    ok, output = _run(quit_args, timeout=10, runner=runner)
     if not ok:
-        lowered = output.lower()
-        if "not authorized" in lowered or "-1743" in output:
-            return (
-                False,
-                "macOSでCodex Appを終了する許可がありません。"
-                "表示された許可画面で操作を許可し、もう一度お試しください。",
-            )
-        return False, output or "Codex Appを終了できませんでした。"
+        if system == "Darwin":
+            lowered = output.lower()
+            if "not authorized" in lowered or "-1743" in output:
+                return (
+                    False,
+                    "macOSでCodex Appを終了する許可がありません。"
+                    "表示された許可画面で操作を許可し、もう一度お試しください。",
+                )
+            return False, output or "Codex Appを終了できませんでした。"
+        return (
+            False,
+            "Codex Appを通常終了できませんでした。"
+            "Codex Appを手動で閉じてから、もう一度お試しください。",
+        )
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not codex_app_is_running(system=system, runner=runner):
@@ -312,22 +407,35 @@ def switch_codex_connection(
 def launch_codex_app(
     system: str | None = None,
     popen: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> tuple[bool, str]:
     system = system or platform.system()
-    if system != "Darwin":
-        return False, "現在はmacOS版のみ対応しています。"
-    if not MAC_CODEX_APP.is_dir():
-        return False, "Codex Appが /Applications に見つかりません。"
-    try:
-        popen(
-            ["/usr/bin/open", "-a", "Codex"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
+    if system == "Darwin":
+        if not MAC_CODEX_APP.is_dir():
+            return False, "Codex Appが /Applications に見つかりません。"
+        try:
+            popen(
+                ["/usr/bin/open", "-a", "Codex"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            return False, str(exc)
+        return True, "Codex Appを起動しました。"
+    if system == "Windows":
+        powershell = detect_windows_powershell()
+        if not powershell:
+            return False, "Windows PowerShellが見つかりません。"
+        ok, output = _run(
+            build_windows_powershell_args(powershell, WINDOWS_CODEX_LAUNCH_SCRIPT),
+            timeout=15,
+            runner=runner,
         )
-    except OSError as exc:
-        return False, str(exc)
-    return True, "Codex Appを起動しました。"
+        if ok:
+            return True, "Codex Appを起動しました。"
+        return False, output or "WindowsのスタートメニューにCodex Appが見つかりません。"
+    return False, "このOSには対応していません。"
 
 
 def parse_ollama_models(output: str) -> list[OllamaModel]:
@@ -361,11 +469,12 @@ def run_checks() -> tuple[list[CheckResult], list[OllamaModel], CodexState]:
     results: list[CheckResult] = []
     state = read_codex_state()
     results.append(CheckResult("ok" if state.mode != "unknown" else "warning", "Codex接続", state.detail))
+    app_exists = codex_app_exists()
     results.append(
         CheckResult(
-            "ok" if codex_app_exists() else "error",
+            "ok" if app_exists else "error",
             "Codex App",
-            "インストールされています。" if codex_app_exists() else "Codex Appが見つかりません。",
+            "インストールされています。" if app_exists else "Codex Appが見つかりません。",
         )
     )
     ollama_path = detect_ollama()

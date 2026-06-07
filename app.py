@@ -30,6 +30,7 @@ from codex_model_launcher.core import (
     run_checks,
     save_settings,
     state_matches_target,
+    subprocess_window_options,
     switch_codex_connection,
 )
 
@@ -788,6 +789,7 @@ class CodexAppLauncher:
                 text=True,
                 bufsize=1,
                 shell=False,
+                **subprocess_window_options(),
             )
             assert self.pull_process.stdout is not None
             buffer = ""

@@ -9,10 +9,14 @@ from unittest.mock import Mock, patch
 from codex_model_launcher.core import (
     DEFAULT_CODEX_OLLAMA_MODEL,
     AppSettings,
+    build_windows_powershell_args,
     build_pull_args,
     build_switch_args,
+    codex_app_exists,
+    codex_app_is_running,
     is_cloud_model,
     is_valid_model,
+    launch_codex_app,
     load_settings,
     model_kind,
     parse_codex_state,
@@ -181,7 +185,11 @@ class CoreTests(unittest.TestCase):
         quit_ok = Mock(returncode=0, stdout="", stderr="")
         stopped = Mock(returncode=1, stdout="", stderr="")
         runner = Mock(side_effect=[running, quit_ok, stopped])
-        ok, _ = quit_codex_app(runner=runner, sleep=lambda _seconds: None)
+        ok, _ = quit_codex_app(
+            system="Darwin",
+            runner=runner,
+            sleep=lambda _seconds: None,
+        )
         self.assertTrue(ok)
         self.assertEqual(
             runner.call_args_list[1].args[0],
@@ -192,9 +200,64 @@ class CoreTests(unittest.TestCase):
     def test_quit_codex_app_explains_permission_denial(self) -> None:
         running = Mock(returncode=0, stdout="123", stderr="")
         denied = Mock(returncode=1, stdout="", stderr="Not authorized to send Apple events. (-1743)")
-        ok, message = quit_codex_app(runner=Mock(side_effect=[running, denied]))
+        ok, message = quit_codex_app(
+            system="Darwin",
+            runner=Mock(side_effect=[running, denied]),
+        )
         self.assertFalse(ok)
         self.assertIn("許可", message)
+
+    @patch("codex_model_launcher.core.detect_windows_powershell", return_value="powershell.exe")
+    def test_windows_codex_detection_uses_fixed_powershell(
+        self,
+        _powershell: Mock,
+    ) -> None:
+        runner = Mock(return_value=Mock(returncode=0, stdout="", stderr=""))
+        self.assertTrue(codex_app_exists(system="Windows", runner=runner))
+        self.assertTrue(codex_app_is_running(system="Windows", runner=runner))
+        for call in runner.call_args_list:
+            args, kwargs = call
+            self.assertEqual(args[0][0], "powershell.exe")
+            self.assertIn("-NonInteractive", args[0])
+            self.assertFalse(kwargs["shell"])
+
+    @patch("codex_model_launcher.core.detect_windows_powershell", return_value="powershell.exe")
+    def test_windows_quit_requests_graceful_close(
+        self,
+        _powershell: Mock,
+    ) -> None:
+        running = Mock(returncode=0, stdout="", stderr="")
+        close_ok = Mock(returncode=0, stdout="", stderr="")
+        stopped = Mock(returncode=1, stdout="", stderr="")
+        runner = Mock(side_effect=[running, close_ok, stopped])
+        ok, _ = quit_codex_app(
+            system="Windows",
+            runner=runner,
+            sleep=lambda _seconds: None,
+        )
+        self.assertTrue(ok)
+        close_args = runner.call_args_list[1].args[0]
+        self.assertIn("CloseMainWindow", close_args[-1])
+        self.assertNotIn("Stop-Process", close_args[-1])
+
+    @patch("codex_model_launcher.core.detect_windows_powershell", return_value="powershell.exe")
+    def test_windows_launch_uses_start_menu_app(
+        self,
+        _powershell: Mock,
+    ) -> None:
+        runner = Mock(return_value=Mock(returncode=0, stdout="", stderr=""))
+        ok, _ = launch_codex_app(system="Windows", runner=runner)
+        self.assertTrue(ok)
+        args, kwargs = runner.call_args
+        self.assertIn("Get-StartApps", args[0][-1])
+        self.assertIn("shell:AppsFolder", args[0][-1])
+        self.assertFalse(kwargs["shell"])
+
+    def test_windows_powershell_args_keep_script_as_one_argument(self) -> None:
+        script = "fixed script"
+        args = build_windows_powershell_args("powershell.exe", script)
+        self.assertEqual(args[-1], script)
+        self.assertEqual(args[0], "powershell.exe")
 
     def test_parse_ollama_models(self) -> None:
         output = (

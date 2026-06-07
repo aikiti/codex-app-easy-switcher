@@ -5,8 +5,8 @@
 | 項目 | 内容 |
 |---|---|
 | アプリ名 | Codex App かんたん切り替え |
-| バージョン | 0.2.0 |
-| 対象OS | arm64 macOS 12以降 |
+| バージョン | 0.3.0 |
+| 対象OS | arm64 macOS 12以降 / Windows版Codex Appが動作するWindows |
 | 主な利用者 | ターミナルやコマンド操作に不慣れな勉強会参加者 |
 | 実装 | Python / Tkinter |
 | 初期・推奨Ollamaモデル | `gpt-oss:120b-cloud` |
@@ -37,11 +37,11 @@ Ollamaモデルをインストール・確認できるようにする。
 
 ### 3.2 対象外
 
-- Windows対応・EXE配布
 - Ollama自体の自動インストール
 - Ollamaモデルの削除
 - モデルごとのCodex互換性保証
 - Apple Developer ID署名・Apple公証
+- Windowsコード署名証明書による署名
 - アカウント作成・サインイン
 
 ## 4. UI方針
@@ -95,8 +95,17 @@ ollama launch codex-app --model <選択したモデル> --yes
 3. ローカルモデルの場合は毎回警告する。
 4. 現在状態と選択先が同じ場合、設定変更せずCodex Appを起動する。
 5. 接続先が異なりCodex Appが起動中の場合、未送信内容が失われる可能性を警告する。
-6. 承認後、AppleScriptでCodex Appを通常終了する。
+6. 承認後、macOSではAppleScript、Windowsでは固定PowerShell処理でCodex Appへ通常終了を
+   依頼する。強制終了は行わない。
 7. Ollama公式コマンドで切り替え、設定状態を確認してCodex Appを起動する。
+
+### 5.4 Windows固有処理
+
+- Codex Appの存在確認と起動は、Windowsスタートメニューの登録情報を使用する。
+- 起動状態確認は固定された`Get-Process`処理を使用する。
+- 通常終了は`CloseMainWindow()`で依頼し、終了できない場合は手動終了を案内する。
+- ユーザー入力をPowerShellスクリプトへ埋め込まない。
+- Ollama・PowerShellなどの子プロセスはコマンド画面を表示せず起動する。
 
 ## 6. モデル管理仕様
 
@@ -112,7 +121,8 @@ ollama launch codex-app --model <選択したモデル> --yes
 アプリ専用設定:
 
 ```text
-~/Library/Application Support/CodexModelLauncher/settings.json
+macOS: ~/Library/Application Support/CodexModelLauncher/settings.json
+Windows: %LOCALAPPDATA%\CodexModelLauncher\settings.json
 ```
 
 保存項目:
@@ -135,16 +145,23 @@ Codex設定:
 - モデル選択だけではCodex AppやCodex設定を変更しない。
 - ローカルモデルは詳細設定へ分離し、選択時・起動時に警告する。
 - Codex Appを終了する前に利用者へ警告する。
+- Windowsでは固定PowerShell処理のみ使用し、強制終了しない。
+- Windowsでは子プロセスのコマンド画面を表示しない。
 - モデル削除、Ollama自動インストール、無確認の大容量ダウンロードを行わない。
 - APIキー、認証情報、プロンプト、Codexプロジェクト内容を収集・送信しない。
 
 ## 9. 配布仕様
 
-- PyInstaller windowedアプリとしてarm64 macOS向けにビルドする。
-- アプリ名: `Codex App かんたん切り替え.app`
-- 配布ZIP: `Codex-App-Easy-Switcher-macOS.zip`
+- macOSはPyInstaller windowedアプリとしてarm64向けにビルドする。
+- macOSアプリ名: `Codex App かんたん切り替え.app`
+- macOS配布ZIP: `Codex-App-Easy-Switcher-macOS.zip`
+- WindowsはGitHub Actionsの`windows-latest`環境でPyInstaller one-file / windowed EXEを
+  ビルドする。
+- Windows配布EXE: `Codex-App-Easy-Switcher-Windows.exe`
+- バージョンタグのpush時にWindows EXEとSHA256ファイルをGitHub Releaseへ自動添付する。
 - 専用アイコンを組み込む。
 - アドホック署名を行い、Apple公証は実施しない。
+- Windows EXEはコード署名証明書による署名を実施しない。
 
 ## 10. 既知の制約
 
@@ -154,6 +171,9 @@ Codex設定:
 - 接続切り替えではCodex Appが終了・再起動され、未送信内容が失われる可能性がある。
 - Ollama公式機能がCodex設定を書き換え、通常`~/.ollama/backup/codex-app/`へ保存する。
 - Apple公証がないため、初回起動時にmacOSの警告が表示される場合がある。
+- Windowsコード署名がないため、SmartScreen警告が表示される場合がある。
+- Windows版はGitHub Actions上のビルド・自動テスト済みだが、Windows実機の操作確認は
+  利用者による検証を待つ。
 
 ## 11. 受入基準
 
@@ -165,4 +185,5 @@ Codex設定:
 - 未準備モデルは起動せずモデル管理画面へ案内する。
 - ローカルモデル選択時・起動時に警告する。
 - 推奨モデルへボタンで戻せる。
-- 自動テストがすべて成功する。
+- macOS / WindowsのGitHub Actions自動テストがすべて成功する。
+- GitHub ReleaseからMac版ZIPとWindows版EXEを直接ダウンロードできる。

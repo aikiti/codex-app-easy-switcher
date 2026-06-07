@@ -19,6 +19,8 @@ delegated to `ollama launch codex-app`.
 - Selecting a model alone never restarts Codex App or changes Codex settings
 - Confirmation before model downloads
 - Confirmation before closing a running Codex App
+- Windows requests a normal window close and never force-kills Codex App
+- Windows child processes run without a visible command window
 - Restore reminder when exiting in Ollama mode
 - No model deletion or automatic Ollama installation
 
@@ -29,6 +31,7 @@ content may be lost. Ollama Launch modifies the Codex configuration and stores
 backups under `~/.ollama/backup/codex-app/`.
 
 The distributed macOS application is ad-hoc signed and is not Apple-notarized.
+The Windows EXE is built by GitHub Actions and is not Authenticode-signed.
 
 ## Dependency posture
 

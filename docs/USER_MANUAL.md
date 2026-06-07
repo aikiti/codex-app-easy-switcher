@@ -16,11 +16,30 @@
 2. Ollama v0.24.0以降をインストールします。
 3. Cloudモデルを使う場合はOllamaへサインインします。
 
-## 起動方法
+## ダウンロード
+
+最新版の配布ページ:
+
+- [GitHub Releasesから最新版を選ぶ](https://github.com/aikiti/codex-app-easy-switcher/releases/latest)
+- [Mac版を直接ダウンロード](https://github.com/aikiti/codex-app-easy-switcher/releases/download/v0.3.0/Codex-App-Easy-Switcher-macOS.zip)
+- [Windows版EXEを直接ダウンロード](https://github.com/aikiti/codex-app-easy-switcher/releases/download/v0.3.0/Codex-App-Easy-Switcher-Windows.exe)
+
+## macOSでの起動方法
 
 1. `Codex App かんたん切り替え.app`をダブルクリックします。
 2. 初回起動時に警告が表示された場合、アプリを右クリックして「開く」を選びます。
 3. 初回切り替え時にCodex Appを制御する許可を求められた場合は許可します。
+
+## Windowsでの起動方法
+
+1. `Codex-App-Easy-Switcher-Windows.exe`をダウンロードします。
+2. EXEをダブルクリックします。コマンドプロンプトは表示されません。
+3. SmartScreen警告が表示された場合、GitHubからダウンロードしたことを確認します。
+4. 必要な場合だけ「詳細情報」→「実行」を選びます。
+
+Windows版はコード署名証明書による署名を行っていません。GitHub以外から入手したEXEは
+実行しないでください。Windows実機での初回検証では、起動・状態確認・モデル一覧確認を
+先に行い、入力途中のCodexセッションがない状態で切り替えを試してください。
 
 ## 推奨モデルを使う
 
@@ -121,6 +140,17 @@ Ollamaをv0.24.0以降へ更新してください。
 ### 初回起動時にmacOSがアプリを開けない
 
 アプリを右クリックして「開く」を選択してください。この配布版はApple公証を行っていません。
+
+### Windows SmartScreenが表示される
+
+Windows版EXEはコード署名証明書による署名を行っていないため、警告される場合があります。
+GitHubの最新版Releaseからダウンロードしたことを確認し、必要に応じてRelease掲載のSHA256と
+一致することを確認してから実行してください。
+
+### WindowsでCodex Appを閉じられない
+
+安全のため強制終了は行いません。Codex Appを手動で閉じてから、もう一度切り替えボタンを
+押してください。
 
 ## 安全に使うための注意
 

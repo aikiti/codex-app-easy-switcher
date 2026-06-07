@@ -1,0 +1,54 @@
+name: Windows EXE release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: python -m pip install pyinstaller==6.17.0 pillow
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build Windows EXE
+        shell: pwsh
+        run: ./scripts/build_windows_app.ps1
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-App-Easy-Switcher-Windows
+          path: |
+            dist/Codex-App-Easy-Switcher-Windows.exe
+            dist/SHA256SUMS-Windows.txt
+          if-no-files-found: error
+
+      - name: Attach EXE to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "$tag macOS / Windows" --generate-notes
+          }
+          gh release upload $tag `
+            "dist/Codex-App-Easy-Switcher-Windows.exe" `
+            "dist/SHA256SUMS-Windows.txt" `
+            --clobber
