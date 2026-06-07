@@ -21,7 +21,7 @@
 最新版の配布ページ:
 
 - [GitHub Releasesから最新版を選ぶ](https://github.com/aikiti/codex-app-easy-switcher/releases/latest)
-- [Mac版を直接ダウンロード](https://github.com/aikiti/codex-app-easy-switcher/releases/download/v0.3.0/Codex-App-Easy-Switcher-macOS.zip)
+- [Mac版（安定版v0.2.0）を直接ダウンロード](https://github.com/aikiti/codex-app-easy-switcher/releases/download/v0.2.0/Codex-App-Easy-Switcher-macOS.zip)
 - [Windows版EXEを直接ダウンロード](https://github.com/aikiti/codex-app-easy-switcher/releases/download/v0.3.0/Codex-App-Easy-Switcher-Windows.exe)
 
 ## macOSでの起動方法
