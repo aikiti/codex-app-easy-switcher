@@ -13,12 +13,12 @@ OllamaのCloudモデル・ローカルモデルを管理できるmacOS / Windows
 最新版の配布ページ:
 
 - [GitHub Releasesから最新版を選ぶ](https://github.com/aikiti/codex-app-easy-switcher/releases/latest)
-- [Mac版（安定版v0.2.0）を直接ダウンロード](https://github.com/aikiti/codex-app-easy-switcher/releases/download/v0.2.0/Codex-App-Easy-Switcher-macOS.zip)
-- [Windows版EXEを直接ダウンロード](https://github.com/aikiti/codex-app-easy-switcher/releases/download/v0.3.0/Codex-App-Easy-Switcher-Windows.exe)
+- [Mac版（最新v0.4.0）を直接ダウンロード](https://github.com/aikiti/codex-app-easy-switcher/releases/download/v0.4.0/Codex-App-Easy-Switcher-macOS.zip)
+- [Windows版EXE（最新v0.4.0）を直接ダウンロード](https://github.com/aikiti/codex-app-easy-switcher/releases/download/v0.4.0/Codex-App-Easy-Switcher-Windows.exe)
 
 MacではZIPを展開してアプリを起動します。WindowsではEXEをダブルクリックします。
-Mac版v0.2.0は実機確認済みです。Windows版v0.3.0はGitHub Actions上のビルドと自動テストを
-通していますが、Windows実機での操作確認はこれから行います。
+v0.4.0では新しいCodex Appが配るレガシーな`profile`設定行を切り替え直後に取り除くようになり、
+「failed to resolve feature override precedence」のエラーが解消されています。
 
 ## 配布物と文書
 
