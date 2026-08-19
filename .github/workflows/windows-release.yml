@@ -35,6 +35,7 @@ jobs:
           path: |
             dist/Codex-App-Easy-Switcher-Windows.exe
             dist/SHA256SUMS-Windows.txt
+            dist/docs/THIRD_PARTY_LICENSES.txt
           if-no-files-found: error
 
       - name: Attach EXE to GitHub Release
@@ -51,4 +52,5 @@ jobs:
           gh release upload $tag `
             "dist/Codex-App-Easy-Switcher-Windows.exe" `
             "dist/SHA256SUMS-Windows.txt" `
+            "dist/docs/THIRD_PARTY_LICENSES.txt" `
             --clobber
