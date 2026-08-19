@@ -7,7 +7,9 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +31,7 @@ MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
 MAC_CODEX_APP = Path("/Applications/Codex.app")
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
 OLLAMA_LIBRARY_BASE_URL = "https://ollama.com/library/"
+OLLAMA_VERSION_URL = "http://127.0.0.1:11434/api/version"
 MAC_OLLAMA_CANDIDATES = (
     Path("/usr/local/bin/ollama"),
     Path("/opt/homebrew/bin/ollama"),
@@ -196,6 +199,71 @@ def detect_ollama() -> str | None:
             if candidate.is_file():
                 return str(candidate)
     return shutil.which("ollama")
+
+
+def ollama_server_status(timeout: float = 2.0) -> tuple[bool, str]:
+    """Return whether the local Ollama HTTP server is ready."""
+    request = urllib.request.Request(OLLAMA_VERSION_URL, method="GET")
+    try:
+        # Fixed loopback Ollama endpoint; no user-controlled URL or scheme.
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+            payload = json.loads(response.read().decode("utf-8"))
+    except (
+        OSError,
+        ValueError,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+    ):
+        return False, "停止中"
+    version = str(payload.get("version", "")).strip()
+    return True, f"起動中（v{version}）" if version else "起動中"
+
+
+def start_ollama_app(
+    ollama_path: str,
+    system: str | None = None,
+    popen: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
+) -> tuple[bool, str]:
+    """Start the official Ollama desktop app or background server."""
+    if not ollama_path:
+        return False, "Ollamaが見つかりません。"
+    system = system or platform.system()
+    if system == "Windows":
+        app_path = Path(ollama_path).with_name("ollama app.exe")
+        args = [str(app_path)] if app_path.is_file() else [ollama_path, "serve"]
+    elif system == "Darwin":
+        args = ["/usr/bin/open", "-a", "Ollama"]
+    else:
+        args = [ollama_path, "serve"]
+    try:
+        popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **subprocess_window_options(system),
+        )
+    except OSError as exc:
+        return False, f"Ollamaを起動できませんでした: {exc}"
+    return True, "Ollamaを起動しています。"
+
+
+def wait_for_ollama_server(
+    timeout: float = 15.0,
+    interval: float = 0.25,
+    checker: Callable[[], tuple[bool, str]] = ollama_server_status,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[bool, str]:
+    """Wait a bounded amount of time for the local Ollama server."""
+    deadline = monotonic() + timeout
+    last_detail = "停止中"
+    while monotonic() < deadline:
+        ready, last_detail = checker()
+        if ready:
+            return True, last_detail
+        sleep(interval)
+    return False, f"Ollamaの起動を{timeout:g}秒待ちましたが接続できませんでした。"
 
 
 def detect_windows_powershell() -> str | None:
@@ -641,7 +709,7 @@ def parse_ollama_show(output: str) -> tuple[tuple[str, ...], int]:
 
 
 def inspect_ollama_model(ollama_path: str, model: OllamaModel) -> OllamaModel:
-    ok, output = _run([ollama_path, "show", model.name], timeout=30)
+    ok, output = _run([ollama_path, "show", model.name], timeout=8)
     if not ok:
         return model
     capabilities, context_length = parse_ollama_show(output)
@@ -655,7 +723,7 @@ def inspect_ollama_model(ollama_path: str, model: OllamaModel) -> OllamaModel:
 def list_ollama_models(ollama_path: str) -> tuple[bool, list[OllamaModel], str]:
     if not ollama_path:
         return False, [], "Ollamaが見つかりません。"
-    ok, output = _run([ollama_path, "list"], timeout=30)
+    ok, output = _run([ollama_path, "list"], timeout=8)
     if not ok:
         return False, [], output
     models = parse_ollama_models(output)
@@ -693,6 +761,16 @@ def run_checks() -> tuple[list[CheckResult], list[OllamaModel], CodexState]:
             ),
         )
     )
+    server_ok, server_detail = ollama_server_status()
+    results.append(
+        CheckResult(
+            "ok" if server_ok else "warning",
+            "Ollamaサーバー",
+            server_detail if server_ok else "停止中です。モデル操作時に起動できます。",
+        )
+    )
+    if not server_ok:
+        return results, [], state
     list_ok, models, list_output = list_ollama_models(ollama_path)
     results.append(
         CheckResult(

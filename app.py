@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 from tkinter import messagebox, ttk
+from typing import Callable
 
 from codex_model_launcher.core import (
     OLLAMA_DOWNLOAD_URL,
@@ -35,14 +36,17 @@ from codex_model_launcher.core import (
     model_kind,
     normalize_model_input,
     ollama_model_library_url,
+    ollama_server_status,
     quit_codex_app,
     read_codex_state,
     remove_legacy_profile_from_config,
     run_checks,
     save_settings,
     state_matches_target,
+    start_ollama_app,
     subprocess_window_options,
     switch_codex_connection,
+    wait_for_ollama_server,
 )
 
 
@@ -164,8 +168,8 @@ class ModelSelectionDialog(tk.Toplevel):
         tree.heading("name", text="モデル名")
         tree.heading("status", text="用途")
         tree.heading("size", text="サイズ")
-        tree.column("name", width=410)
-        tree.column("status", width=120, stretch=False)
+        tree.column("name", width=350)
+        tree.column("status", width=190, stretch=False)
         tree.column("size", width=100, stretch=False)
         return tree
 
@@ -184,8 +188,11 @@ class ModelSelectionDialog(tk.Toplevel):
         )
         for tree, items in ((self.cloud_tree, cloud_models), (self.local_tree, local_models)):
             for model in items:
+                status = model.codex_status
+                if not is_codex_compatible_model(model):
+                    status += "（選択不可）"
                 tree.insert(
-                    "", "end", values=(model.name, model.codex_status, model.size)
+                    "", "end", values=(model.name, status, model.size)
                 )
 
     def _choose_from_tree(self, tree: ttk.Treeview) -> None:
@@ -218,7 +225,17 @@ class ModelSelectionDialog(tk.Toplevel):
 
     def _choose(self, model: str) -> None:
         installed = next((item for item in self.models if item.name == model), None)
-        if installed and not is_codex_compatible_model(installed):
+        if installed is None:
+            messagebox.showerror(
+                "モデルがインストールされていません",
+                (
+                    f"{model} は最新のモデル一覧にありません。\n\n"
+                    "先にモデル管理画面からインストールしてください。"
+                ),
+                parent=self,
+            )
+            return
+        if not is_codex_compatible_model(installed):
             messagebox.showerror(
                 "Codexでは使用できません",
                 (
@@ -298,6 +315,7 @@ class CodexAppLauncher:
         self.selected_model_detail_var = tk.StringVar(value="")
         self.state_var = tk.StringVar(value="現在の状態を確認しています...")
         self.state_detail_var = tk.StringVar(value="")
+        self.ollama_status_var = tk.StringVar(value="Ollama: 確認中")
         self.model_summary_var = tk.StringVar(value="モデル一覧を確認していません。")
         self.busy = False
         self.pull_response = None
@@ -356,10 +374,15 @@ class CodexAppLauncher:
         ttk.Label(state_frame, textvariable=self.state_detail_var, justify="left").grid(
             row=1, column=0, sticky="w", pady=(5, 0)
         )
+        ttk.Label(
+            state_frame,
+            textvariable=self.ollama_status_var,
+            font=("", 11, "bold"),
+        ).grid(row=2, column=0, sticky="w", pady=(7, 0))
         self.refresh_button = ttk.Button(
             state_frame, text="状態を再確認", command=self._start_checks
         )
-        self.refresh_button.grid(row=0, column=1, rowspan=2, padx=(16, 0))
+        self.refresh_button.grid(row=0, column=1, rowspan=3, padx=(16, 0))
 
         action_frame = ttk.LabelFrame(tab, text=" 接続先を選んで起動 ", padding=16)
         action_frame.grid(row=1, column=0, sticky="ew", pady=(14, 0))
@@ -636,6 +659,79 @@ class CodexAppLauncher:
         ):
             widget.configure(state=state)
 
+    def _with_ollama_ready(
+        self,
+        action_label: str,
+        callback: Callable[[str], None],
+    ) -> None:
+        """Run callback after confirming the local Ollama server is ready."""
+        ollama_path = detect_ollama()
+        if not ollama_path:
+            self.ollama_status_var.set("Ollama: 未インストール")
+            messagebox.showerror(
+                "Ollamaが見つかりません",
+                "Ollamaをインストールしてから、状態を再確認してください。",
+                parent=self.root,
+            )
+            return
+        ready, detail = ollama_server_status()
+        if ready:
+            self.ollama_status_var.set(f"Ollama: {detail}")
+            callback(ollama_path)
+            return
+        self.ollama_status_var.set("Ollama: 停止中")
+        if not messagebox.askyesno(
+            "Ollamaは停止しています",
+            (
+                f"{action_label}にはOllamaの起動が必要です。\n\n"
+                "Ollamaを起動して続けますか？"
+            ),
+            parent=self.root,
+        ):
+            return
+        self._set_busy(True)
+        self.ollama_status_var.set("Ollama: 起動しています...")
+        self._replace_text(
+            self.switch_log,
+            f"Ollamaを起動してから{action_label}を続けます。最大15秒お待ちください...",
+        )
+        threading.Thread(
+            target=self._start_ollama_worker,
+            args=(ollama_path, callback),
+            daemon=True,
+        ).start()
+
+    def _start_ollama_worker(
+        self,
+        ollama_path: str,
+        callback: Callable[[str], None],
+    ) -> None:
+        started, message = start_ollama_app(ollama_path)
+        if started:
+            started, message = wait_for_ollama_server()
+        self.root.after(
+            0,
+            lambda: self._finish_start_ollama(
+                started, message, ollama_path, callback
+            ),
+        )
+
+    def _finish_start_ollama(
+        self,
+        ok: bool,
+        message: str,
+        ollama_path: str,
+        callback: Callable[[str], None],
+    ) -> None:
+        self._set_busy(False)
+        if not ok:
+            self.ollama_status_var.set("Ollama: 起動できません")
+            self._replace_text(self.switch_log, message)
+            messagebox.showerror("Ollama起動エラー", message, parent=self.root)
+            return
+        self.ollama_status_var.set(f"Ollama: {message}")
+        callback(ollama_path)
+
     def _start_checks(self) -> None:
         if self.busy:
             return
@@ -649,9 +745,23 @@ class CodexAppLauncher:
 
     def _finish_checks(self, results: list, models: list[OllamaModel], state: CodexState) -> None:
         self._show_state(state)
-        self._show_models(models)
         self._replace_text(self.switch_log, format_checks(results))
-        if detect_ollama():
+        ollama_path = detect_ollama()
+        server_result = next(
+            (result for result in results if result.title == "Ollamaサーバー"),
+            None,
+        )
+        if not ollama_path:
+            self.ollama_status_var.set("Ollama: 未インストール")
+        elif server_result and server_result.level == "ok":
+            self.ollama_status_var.set(f"Ollama: {server_result.detail}")
+            self._show_models(models)
+        else:
+            self.ollama_status_var.set("Ollama: 停止中")
+            self.model_summary_var.set(
+                "Ollamaは停止中です。モデル操作時に起動できます。"
+            )
+        if ollama_path:
             self.ollama_missing.grid_forget()
         else:
             self.ollama_missing.grid(row=2, column=0, sticky="ew", pady=(12, 0))
@@ -687,14 +797,9 @@ class CodexAppLauncher:
     def _choose_codex_model(self) -> None:
         if self.busy:
             return
-        ollama_path = detect_ollama()
-        if not ollama_path:
-            messagebox.showerror(
-                "Ollamaが見つかりません",
-                "Ollamaをインストールしてからモデルを選択してください。",
-                parent=self.root,
-            )
-            return
+        self._with_ollama_ready("モデル一覧の取得", self._begin_choose_codex_model)
+
+    def _begin_choose_codex_model(self, ollama_path: str) -> None:
         self._set_busy(True)
         self._replace_text(self.switch_log, "インストール済みモデルを再取得しています...")
         threading.Thread(
@@ -718,6 +823,18 @@ class CodexAppLauncher:
             messagebox.showerror("モデル一覧取得エラー", output, parent=self.root)
             return
         self._show_models(models)
+        compatible_models = [model for model in self.models if is_codex_compatible_model(model)]
+        if not compatible_models:
+            messagebox.showinfo(
+                "Codex対応モデルがありません",
+                (
+                    "インストール済みモデルにCodex対応モデルがありません。\n\n"
+                    f"{WORKSHOP_MODEL_8GB}はOllama体験専用で、Codexでは使用できません。\n"
+                    "モデル管理からCodex対応モデルをインストールしてください。"
+                ),
+                parent=self.root,
+            )
+            return
         dialog = ModelSelectionDialog(self.root, self.models, self.settings.codex_model)
         self.root.wait_window(dialog)
         if not dialog.result:
@@ -736,8 +853,6 @@ class CodexAppLauncher:
     def _request_switch(self, mode: str) -> None:
         if self.busy:
             return
-        ollama_path = detect_ollama()
-        current_state = read_codex_state()
         selected_model = self.settings.codex_model
         if mode == "ollama" and not selected_model:
             messagebox.showinfo(
@@ -747,13 +862,74 @@ class CodexAppLauncher:
             )
             self._choose_codex_model()
             return
-        if mode == "ollama" and not ollama_path:
-            messagebox.showerror(
-                "Ollamaが見つかりません",
-                "Ollamaをインストールしてから、状態を再確認してください。",
+        self._with_ollama_ready(
+            "Codex Appの接続切り替え",
+            lambda ollama_path: self._begin_switch_request(mode, ollama_path),
+        )
+
+    def _begin_switch_request(self, mode: str, ollama_path: str) -> None:
+        if mode == "normal":
+            self._continue_switch_request(mode, ollama_path)
+            return
+        self._set_busy(True)
+        self._replace_text(
+            self.switch_log,
+            "選択中モデルのインストール状態とCodex互換性を確認しています...",
+        )
+        threading.Thread(
+            target=self._prepare_switch_worker,
+            args=(mode, ollama_path),
+            daemon=True,
+        ).start()
+
+    def _prepare_switch_worker(self, mode: str, ollama_path: str) -> None:
+        ok, models, output = list_ollama_models(ollama_path)
+        self.root.after(
+            0,
+            lambda: self._finish_prepare_switch(
+                ok, models, output, mode, ollama_path
+            ),
+        )
+
+    def _finish_prepare_switch(
+        self,
+        ok: bool,
+        models: list[OllamaModel],
+        output: str,
+        mode: str,
+        ollama_path: str,
+    ) -> None:
+        self._set_busy(False)
+        if not ok:
+            self._replace_text(self.switch_log, output)
+            messagebox.showerror("モデル確認エラー", output, parent=self.root)
+            return
+        previous_model = self.settings.codex_model
+        previous_installed = next(
+            (model for model in models if model.name == previous_model), None
+        )
+        self._show_models(models)
+        if previous_model and not self.settings.codex_model:
+            self.tabs.select(self.models_tab)
+            reason = (
+                "現在インストールされていません"
+                if previous_installed is None
+                else "現在の確認結果ではCodex非対応です"
+            )
+            messagebox.showwarning(
+                "選択モデルを解除しました",
+                (
+                    f"以前選択した {previous_model} は{reason}。\n\n"
+                    "モデル管理でCodex対応モデルを準備してから、もう一度選択してください。"
+                ),
                 parent=self.root,
             )
             return
+        self._continue_switch_request(mode, ollama_path)
+
+    def _continue_switch_request(self, mode: str, ollama_path: str) -> None:
+        current_state = read_codex_state()
+        selected_model = self.settings.codex_model
         installed_model = next(
             (model for model in self.models if model.name == selected_model), None
         )
@@ -790,9 +966,7 @@ class CodexAppLauncher:
             parent=self.root,
         ):
             return
-        if state_matches_target(current_state, mode, selected_model) and (
-            mode == "normal" or ollama_path is not None
-        ):
+        if state_matches_target(current_state, mode, selected_model):
             ok, message = launch_codex_app()
             self._show_state(current_state)
             self._replace_text(
@@ -806,13 +980,6 @@ class CodexAppLauncher:
             )
             if not ok:
                 messagebox.showerror("Codex App起動エラー", message, parent=self.root)
-            return
-        if not ollama_path:
-            messagebox.showerror(
-                "Ollamaが見つかりません",
-                "Ollamaをインストールしてから、状態を再確認してください。",
-                parent=self.root,
-            )
             return
         if codex_app_is_running() and not messagebox.askyesno(
             "Codex Appを切り替えます", SWITCH_WARNING, parent=self.root
@@ -886,10 +1053,9 @@ class CodexAppLauncher:
     def _start_model_refresh(self) -> None:
         if self.busy:
             return
-        ollama_path = detect_ollama()
-        if not ollama_path:
-            messagebox.showerror("Ollamaが見つかりません", "Ollamaをインストールしてください。")
-            return
+        self._with_ollama_ready("モデル一覧の更新", self._begin_model_refresh)
+
+    def _begin_model_refresh(self, ollama_path: str) -> None:
         self._set_busy(True)
         self.model_summary_var.set("モデル一覧を更新しています...")
         threading.Thread(target=self._model_refresh_worker, args=(ollama_path,), daemon=True).start()
@@ -930,6 +1096,15 @@ class CodexAppLauncher:
             f"インストール済み: {len(self.models)}件"
             f"（Cloud {cloud_count}件 / ローカル {len(self.models) - cloud_count}件）"
         )
+        selected_model = self.settings.codex_model
+        selected = next(
+            (model for model in self.models if model.name == selected_model), None
+        )
+        if selected_model and (
+            selected is None or not is_codex_compatible_model(selected)
+        ):
+            self.settings.codex_model = ""
+            self._save_settings()
         self._refresh_selected_model_display()
 
     @staticmethod
@@ -977,10 +1152,6 @@ class CodexAppLauncher:
             )
             return
         self.install_model_var.set(model)
-        ollama_path = detect_ollama()
-        if not ollama_path:
-            messagebox.showerror("Ollamaが見つかりません", "Ollamaをインストールしてください。")
-            return
         kind = model_kind(model)
         prompt = (
             f"次の{kind}をインストールします。\n\n"
@@ -990,6 +1161,19 @@ class CodexAppLauncher:
         )
         if not messagebox.askyesno("モデルをインストール", prompt, parent=self.root):
             return
+        self._with_ollama_ready(
+            "モデルのインストール",
+            lambda ollama_path: self._begin_pull(
+                ollama_path, model, select_after
+            ),
+        )
+
+    def _begin_pull(
+        self,
+        ollama_path: str,
+        model: str,
+        select_after: bool,
+    ) -> None:
         self.select_model_after_pull = model if select_after else None
         self.settings.install_model = model
         self._save_settings()
@@ -1082,7 +1266,15 @@ class CodexAppLauncher:
                 )
             messagebox.showinfo(
                 "インストール完了",
-                f"{model} のインストールが完了しました。",
+                (
+                    f"{model} のインストールが完了しました。\n\n"
+                    + (
+                        "このモデルはOllamaアプリでの体験専用です。\n"
+                        "Codex AppのローカルLLM起動には使用できません。"
+                        if model == WORKSHOP_MODEL_8GB
+                        else "Codex対応モデルは自動的に選択されます。"
+                    )
+                ),
                 parent=self.root,
             )
             self._start_model_refresh()
@@ -1138,14 +1330,9 @@ class CodexAppLauncher:
         if dialog.result == "keep":
             self._save_and_destroy()
             return
-        ollama_path = detect_ollama()
-        if not ollama_path:
-            messagebox.showerror(
-                "通常のCodexへ戻せません",
-                "Ollamaが見つからないため復元できません。ランチャーは終了しません。",
-                parent=self.root,
-            )
-            return
+        self._with_ollama_ready("通常のCodexへの復元", self._begin_close_restore)
+
+    def _begin_close_restore(self, ollama_path: str) -> None:
         self._set_busy(True)
         self._replace_text(self.switch_log, "通常のCodexへ戻しています...")
         threading.Thread(

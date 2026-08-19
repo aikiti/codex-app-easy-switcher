@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from codex_model_launcher.core import (
     DEFAULT_CODEX_OLLAMA_MODEL,
@@ -25,6 +25,7 @@ from codex_model_launcher.core import (
     model_kind,
     normalize_model_input,
     ollama_model_library_url,
+    ollama_server_status,
     parse_codex_state,
     parse_ollama_models,
     parse_ollama_show,
@@ -34,8 +35,10 @@ from codex_model_launcher.core import (
     save_settings,
     settings_file,
     state_matches_target,
+    start_ollama_app,
     strip_top_level_profile,
     switch_codex_connection,
+    wait_for_ollama_server,
 )
 
 
@@ -79,6 +82,62 @@ class CoreTests(unittest.TestCase):
             self.assertNotEqual(first, second)
             self.assertEqual(first.read_bytes(), source.read_bytes())
             self.assertEqual(second.read_bytes(), source.read_bytes())
+
+    @patch("codex_model_launcher.core.urllib.request.urlopen")
+    def test_ollama_server_status_reads_local_version(self, urlopen: MagicMock) -> None:
+        response = MagicMock()
+        response.read.return_value = b'{"version":"0.24.1"}'
+        urlopen.return_value.__enter__.return_value = response
+        ok, detail = ollama_server_status(timeout=0.1)
+        self.assertTrue(ok)
+        self.assertEqual(detail, "起動中（v0.24.1）")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://127.0.0.1:11434/api/version")
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 0.1)
+
+    @patch(
+        "codex_model_launcher.core.urllib.request.urlopen",
+        side_effect=OSError("connection refused"),
+    )
+    def test_ollama_server_status_reports_stopped(self, _urlopen: MagicMock) -> None:
+        self.assertEqual(ollama_server_status(timeout=0.1), (False, "停止中"))
+
+    def test_start_ollama_uses_windows_desktop_app(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cli = root / "ollama.exe"
+            app = root / "ollama app.exe"
+            cli.touch()
+            app.touch()
+            popen = Mock()
+            ok, _ = start_ollama_app(str(cli), system="Windows", popen=popen)
+            self.assertTrue(ok)
+            self.assertEqual(popen.call_args.args[0], [str(app)])
+
+    def test_wait_for_ollama_server_succeeds_after_retry(self) -> None:
+        checker = Mock(side_effect=[(False, "停止中"), (True, "起動中")])
+        clock = Mock(side_effect=[0.0, 0.0, 0.1])
+        ok, detail = wait_for_ollama_server(
+            timeout=1,
+            interval=0,
+            checker=checker,
+            monotonic=clock,
+            sleep=lambda _seconds: None,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(detail, "起動中")
+
+    def test_wait_for_ollama_server_has_bounded_timeout(self) -> None:
+        clock = Mock(side_effect=[0.0, 0.0, 16.0])
+        ok, detail = wait_for_ollama_server(
+            timeout=15,
+            interval=0,
+            checker=lambda: (False, "停止中"),
+            monotonic=clock,
+            sleep=lambda _seconds: None,
+        )
+        self.assertFalse(ok)
+        self.assertIn("15秒", detail)
 
     def test_platform_settings_locations(self) -> None:
         home = Path("example-home")
