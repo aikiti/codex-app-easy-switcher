@@ -7,19 +7,31 @@ import re
 import shutil
 import subprocess
 import time
-from dataclasses import asdict, dataclass
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 
 APP_NAME = "CodexModelLauncher"
 DEFAULT_CODEX_OLLAMA_MODEL = "gpt-oss:120b-cloud"
+WORKSHOP_MODEL_8GB = "gemma3:1b"
+WORKSHOP_MODEL_16GB = "gemma4:e2b-it-qat"
+WORKSHOP_MODEL_GEMMA4_E4B = "gemma4:e4b-it-qat"
+WORKSHOP_MODEL_GEMMA4_12B = "gemma4:12b-it-qat"
+WORKSHOP_MODEL_QWEN_9B = "qwen3.5:9b"
+WORKSHOP_MODEL_32GB = "qwen3.5:27b"
 # Ollama Launch が config.toml に書き込むプロファイル名。新しい Codex は
 # トップレベルの `profile = "..."` を廃止したため、切り替え後にこの行だけ取り除く。
 OLLAMA_LAUNCH_PROFILE = "ollama-launch-codex-app"
 MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
 MAC_CODEX_APP = Path("/Applications/Codex.app")
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
+OLLAMA_LIBRARY_BASE_URL = "https://ollama.com/library/"
+OLLAMA_VERSION_URL = "http://127.0.0.1:11434/api/version"
 MAC_OLLAMA_CANDIDATES = (
     Path("/usr/local/bin/ollama"),
     Path("/opt/homebrew/bin/ollama"),
@@ -51,7 +63,7 @@ WINDOWS_CODEX_LAUNCH_SCRIPT = (
 class AppSettings:
     install_model: str = ""
     window_geometry: str = "900x720"
-    codex_model: str = DEFAULT_CODEX_OLLAMA_MODEL
+    codex_model: str = ""
 
 
 @dataclass
@@ -68,10 +80,20 @@ class OllamaModel:
     model_id: str
     size: str
     modified: str
+    capabilities: tuple[str, ...] = ()
+    context_length: int = 0
 
     @property
     def kind(self) -> str:
         return "Cloud" if is_cloud_model(self.name) else "ローカル"
+
+    @property
+    def codex_status(self) -> str:
+        if is_codex_compatible_model(self):
+            return "Codex対応Cloud" if is_cloud_model(self.name) else "Codex対応"
+        if self.capabilities:
+            return "Codex非対応Cloud" if is_cloud_model(self.name) else "Ollama体験用"
+        return "Cloud未確認" if is_cloud_model(self.name) else "未確認"
 
 
 @dataclass
@@ -106,9 +128,9 @@ def load_settings(path: Path | None = None) -> AppSettings:
     model = str(data.get("install_model", "")).strip()
     if model and not is_valid_model(model):
         model = ""
-    codex_model = str(data.get("codex_model", DEFAULT_CODEX_OLLAMA_MODEL)).strip()
-    if not is_valid_model(codex_model):
-        codex_model = DEFAULT_CODEX_OLLAMA_MODEL
+    codex_model = str(data.get("codex_model", "")).strip()
+    if codex_model and not is_valid_model(codex_model):
+        codex_model = ""
     geometry = str(data.get("window_geometry", AppSettings.window_geometry))
     return AppSettings(
         install_model=model,
@@ -129,6 +151,36 @@ def save_settings(settings: AppSettings, path: Path | None = None) -> Path:
     return path
 
 
+def backup_codex_config(
+    path: Path | None = None,
+    backup_dir: Path | None = None,
+    timestamp: str | None = None,
+) -> Path:
+    """Create an atomic, non-overwriting snapshot before changing Codex config."""
+    source = path or codex_config_file()
+    if not source.is_file():
+        raise FileNotFoundError(f"Codex設定ファイルが見つかりません: {source}")
+    destination_dir = backup_dir or (settings_file().parent / "backups")
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    stamp = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    destination = destination_dir / f"config.before-switch.{stamp}.toml"
+    suffix = 1
+    while destination.exists():
+        destination = destination_dir / f"config.before-switch.{stamp}-{suffix}.toml"
+        suffix += 1
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    try:
+        shutil.copy2(source, temporary)
+        os.replace(temporary, destination)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return destination
+
+
 def detect_ollama() -> str | None:
     system = platform.system()
     if system == "Darwin":
@@ -147,6 +199,71 @@ def detect_ollama() -> str | None:
             if candidate.is_file():
                 return str(candidate)
     return shutil.which("ollama")
+
+
+def ollama_server_status(timeout: float = 2.0) -> tuple[bool, str]:
+    """Return whether the local Ollama HTTP server is ready."""
+    request = urllib.request.Request(OLLAMA_VERSION_URL, method="GET")
+    try:
+        # Fixed loopback Ollama endpoint; no user-controlled URL or scheme.
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+            payload = json.loads(response.read().decode("utf-8"))
+    except (
+        OSError,
+        ValueError,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+    ):
+        return False, "停止中"
+    version = str(payload.get("version", "")).strip()
+    return True, f"起動中（v{version}）" if version else "起動中"
+
+
+def start_ollama_app(
+    ollama_path: str,
+    system: str | None = None,
+    popen: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
+) -> tuple[bool, str]:
+    """Start the official Ollama desktop app or background server."""
+    if not ollama_path:
+        return False, "Ollamaが見つかりません。"
+    system = system or platform.system()
+    if system == "Windows":
+        app_path = Path(ollama_path).with_name("ollama app.exe")
+        args = [str(app_path)] if app_path.is_file() else [ollama_path, "serve"]
+    elif system == "Darwin":
+        args = ["/usr/bin/open", "-a", "Ollama"]
+    else:
+        args = [ollama_path, "serve"]
+    try:
+        popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **subprocess_window_options(system),
+        )
+    except OSError as exc:
+        return False, f"Ollamaを起動できませんでした: {exc}"
+    return True, "Ollamaを起動しています。"
+
+
+def wait_for_ollama_server(
+    timeout: float = 15.0,
+    interval: float = 0.25,
+    checker: Callable[[], tuple[bool, str]] = ollama_server_status,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[bool, str]:
+    """Wait a bounded amount of time for the local Ollama server."""
+    deadline = monotonic() + timeout
+    last_detail = "停止中"
+    while monotonic() < deadline:
+        ready, last_detail = checker()
+        if ready:
+            return True, last_detail
+        sleep(interval)
+    return False, f"Ollamaの起動を{timeout:g}秒待ちましたが接続できませんでした。"
 
 
 def detect_windows_powershell() -> str | None:
@@ -195,12 +312,53 @@ def codex_app_exists(
     return False
 
 
-def codex_config_file(home: Path | None = None) -> Path:
-    return (home or Path.home()) / ".codex" / "config.toml"
+def codex_config_file(
+    home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Return the active user-level Codex config path.
+
+    An explicit ``home`` is retained for deterministic callers and tests. In normal
+    operation, ``CODEX_HOME`` is authoritative when set; otherwise Codex defaults to
+    ``~/.codex``.
+    """
+    if home is not None:
+        return home / ".codex" / "config.toml"
+    environment = os.environ if environ is None else environ
+    configured_home = environment.get("CODEX_HOME", "").strip()
+    if configured_home:
+        expanded = os.path.expandvars(configured_home)
+        return Path(expanded).expanduser() / "config.toml"
+    return Path.home() / ".codex" / "config.toml"
 
 
 def is_valid_model(model: str) -> bool:
     return bool(MODEL_PATTERN.fullmatch(model.strip()))
+
+
+def ollama_model_library_url(model: str) -> str:
+    """Return the official Ollama library URL for a validated model name."""
+    normalized = model.strip()
+    if not is_valid_model(normalized):
+        raise ValueError("モデル名に使用できない文字が含まれています。")
+    return OLLAMA_LIBRARY_BASE_URL + urllib.parse.quote(normalized, safe="")
+
+
+def normalize_model_input(value: str) -> str | None:
+    """Accept a bare model name or an exact Ollama run/pull command.
+
+    Official Ollama model pages commonly show ``ollama run <model>``. Only that
+    fixed, argument-free shape is accepted; the returned model is validated again
+    before it can be passed to subprocess.
+    """
+    text = value.strip()
+    if is_valid_model(text):
+        return text
+    match = re.fullmatch(r"ollama\s+(?:run|pull)\s+(\S+)", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    model = match.group(1)
+    return model if is_valid_model(model) else None
 
 
 def is_cloud_model(model: str) -> bool:
@@ -210,6 +368,15 @@ def is_cloud_model(model: str) -> bool:
 
 def model_kind(model: str) -> str:
     return "Cloudモデル" if is_cloud_model(model) else "ローカルモデル"
+
+
+def is_codex_compatible_model(model: OllamaModel) -> bool:
+    """Return whether an installed model exposes the features Codex needs."""
+    capabilities = {item.lower() for item in model.capabilities}
+    return (
+        {"tools", "thinking"}.issubset(capabilities)
+        and model.context_length >= 65536
+    )
 
 
 def parse_version(text: str) -> tuple[int, int, int] | None:
@@ -244,6 +411,14 @@ def parse_codex_state(config_text: str) -> CodexState:
             model=model,
             provider=provider,
             detail=f"通常のCodex GPT: {model or 'デフォルトモデル'}",
+        )
+    # Codex may omit model_provider for its built-in OpenAI provider. A
+    # top-level model without an Ollama profile/provider is normal Codex.
+    if model:
+        return CodexState(
+            "normal",
+            model=model,
+            detail=f"通常のCodex GPT: {model}",
         )
     return CodexState(
         "unknown",
@@ -512,11 +687,48 @@ def parse_ollama_models(output: str) -> list[OllamaModel]:
     return models
 
 
+def parse_ollama_show(output: str) -> tuple[tuple[str, ...], int]:
+    capabilities: list[str] = []
+    in_capabilities = False
+    context_length = 0
+    for line in output.splitlines():
+        stripped = line.strip()
+        context_match = re.fullmatch(r"context length\s+(\d+)", stripped, re.IGNORECASE)
+        if context_match:
+            context_length = int(context_match.group(1))
+        if stripped == "Capabilities":
+            in_capabilities = True
+            continue
+        if in_capabilities:
+            if line.startswith("    ") and stripped:
+                capabilities.append(stripped.lower())
+                continue
+            if stripped:
+                in_capabilities = False
+    return tuple(capabilities), context_length
+
+
+def inspect_ollama_model(ollama_path: str, model: OllamaModel) -> OllamaModel:
+    ok, output = _run([ollama_path, "show", model.name], timeout=8)
+    if not ok:
+        return model
+    capabilities, context_length = parse_ollama_show(output)
+    return replace(
+        model,
+        capabilities=capabilities,
+        context_length=context_length,
+    )
+
+
 def list_ollama_models(ollama_path: str) -> tuple[bool, list[OllamaModel], str]:
     if not ollama_path:
         return False, [], "Ollamaが見つかりません。"
-    ok, output = _run([ollama_path, "list"], timeout=30)
-    return ok, parse_ollama_models(output) if ok else [], output
+    ok, output = _run([ollama_path, "list"], timeout=8)
+    if not ok:
+        return False, [], output
+    models = parse_ollama_models(output)
+    models = [inspect_ollama_model(ollama_path, model) for model in models]
+    return True, models, output
 
 
 def run_checks() -> tuple[list[CheckResult], list[OllamaModel], CodexState]:
@@ -549,6 +761,16 @@ def run_checks() -> tuple[list[CheckResult], list[OllamaModel], CodexState]:
             ),
         )
     )
+    server_ok, server_detail = ollama_server_status()
+    results.append(
+        CheckResult(
+            "ok" if server_ok else "warning",
+            "Ollamaサーバー",
+            server_detail if server_ok else "停止中です。モデル操作時に起動できます。",
+        )
+    )
+    if not server_ok:
+        return results, [], state
     list_ok, models, list_output = list_ollama_models(ollama_path)
     results.append(
         CheckResult(

@@ -4,31 +4,41 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from codex_model_launcher.core import (
     DEFAULT_CODEX_OLLAMA_MODEL,
     AppSettings,
+    OllamaModel,
+    backup_codex_config,
     build_windows_powershell_args,
     build_pull_args,
     build_switch_args,
     codex_app_exists,
     codex_app_is_running,
+    codex_config_file,
+    is_codex_compatible_model,
     is_cloud_model,
     is_valid_model,
     launch_codex_app,
     load_settings,
     model_kind,
+    normalize_model_input,
+    ollama_model_library_url,
+    ollama_server_status,
     parse_codex_state,
     parse_ollama_models,
+    parse_ollama_show,
     parse_version,
     quit_codex_app,
     remove_legacy_profile_from_config,
     save_settings,
     settings_file,
     state_matches_target,
+    start_ollama_app,
     strip_top_level_profile,
     switch_codex_connection,
+    wait_for_ollama_server,
 )
 
 
@@ -52,7 +62,7 @@ class CoreTests(unittest.TestCase):
                 )
             )
             self.assertEqual(load_settings(path).install_model, "")
-            self.assertEqual(load_settings(path).codex_model, DEFAULT_CODEX_OLLAMA_MODEL)
+            self.assertEqual(load_settings(path).codex_model, "")
 
     def test_selected_codex_model_is_saved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -60,6 +70,74 @@ class CoreTests(unittest.TestCase):
             settings = AppSettings(codex_model="minimax-m3:cloud")
             save_settings(settings, path)
             self.assertEqual(load_settings(path).codex_model, "minimax-m3:cloud")
+
+    def test_codex_config_backup_is_copied_and_never_overwritten(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "config.toml"
+            backup_dir = root / "backups"
+            source.write_text('model = "gpt-5.6-sol"\n', encoding="utf-8")
+            first = backup_codex_config(source, backup_dir, "fixed")
+            second = backup_codex_config(source, backup_dir, "fixed")
+            self.assertNotEqual(first, second)
+            self.assertEqual(first.read_bytes(), source.read_bytes())
+            self.assertEqual(second.read_bytes(), source.read_bytes())
+
+    @patch("codex_model_launcher.core.urllib.request.urlopen")
+    def test_ollama_server_status_reads_local_version(self, urlopen: MagicMock) -> None:
+        response = MagicMock()
+        response.read.return_value = b'{"version":"0.24.1"}'
+        urlopen.return_value.__enter__.return_value = response
+        ok, detail = ollama_server_status(timeout=0.1)
+        self.assertTrue(ok)
+        self.assertEqual(detail, "起動中（v0.24.1）")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://127.0.0.1:11434/api/version")
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 0.1)
+
+    @patch(
+        "codex_model_launcher.core.urllib.request.urlopen",
+        side_effect=OSError("connection refused"),
+    )
+    def test_ollama_server_status_reports_stopped(self, _urlopen: MagicMock) -> None:
+        self.assertEqual(ollama_server_status(timeout=0.1), (False, "停止中"))
+
+    def test_start_ollama_uses_windows_desktop_app(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cli = root / "ollama.exe"
+            app = root / "ollama app.exe"
+            cli.touch()
+            app.touch()
+            popen = Mock()
+            ok, _ = start_ollama_app(str(cli), system="Windows", popen=popen)
+            self.assertTrue(ok)
+            self.assertEqual(popen.call_args.args[0], [str(app)])
+
+    def test_wait_for_ollama_server_succeeds_after_retry(self) -> None:
+        checker = Mock(side_effect=[(False, "停止中"), (True, "起動中")])
+        clock = Mock(side_effect=[0.0, 0.0, 0.1])
+        ok, detail = wait_for_ollama_server(
+            timeout=1,
+            interval=0,
+            checker=checker,
+            monotonic=clock,
+            sleep=lambda _seconds: None,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(detail, "起動中")
+
+    def test_wait_for_ollama_server_has_bounded_timeout(self) -> None:
+        clock = Mock(side_effect=[0.0, 0.0, 16.0])
+        ok, detail = wait_for_ollama_server(
+            timeout=15,
+            interval=0,
+            checker=lambda: (False, "停止中"),
+            monotonic=clock,
+            sleep=lambda _seconds: None,
+        )
+        self.assertFalse(ok)
+        self.assertIn("15秒", detail)
 
     def test_platform_settings_locations(self) -> None:
         home = Path("example-home")
@@ -72,11 +150,67 @@ class CoreTests(unittest.TestCase):
             ("CodexModelLauncher", "settings.json"),
         )
 
+    def test_codex_config_uses_default_home(self) -> None:
+        home = Path("example-home")
+        self.assertEqual(
+            codex_config_file(home=home),
+            home / ".codex" / "config.toml",
+        )
+
+    def test_codex_config_respects_codex_home(self) -> None:
+        configured = Path("custom-codex-home")
+        self.assertEqual(
+            codex_config_file(environ={"CODEX_HOME": str(configured)}),
+            configured / "config.toml",
+        )
+
+    def test_codex_config_ignores_blank_codex_home(self) -> None:
+        with patch("codex_model_launcher.core.Path.home", return_value=Path("fallback-home")):
+            self.assertEqual(
+                codex_config_file(environ={"CODEX_HOME": "   "}),
+                Path("fallback-home") / ".codex" / "config.toml",
+            )
+
     def test_model_validation(self) -> None:
         self.assertTrue(is_valid_model(DEFAULT_CODEX_OLLAMA_MODEL))
         self.assertTrue(is_valid_model("namespace/model:tag"))
         for invalid in ("", "model name", "model;rm", "$(bad)", "bad'quote", "bad\nname"):
             self.assertFalse(is_valid_model(invalid), invalid)
+
+    def test_workshop_models_and_official_library_links(self) -> None:
+        models = (
+            "gemma3:1b",
+            "gemma4:e2b-it-qat",
+            "gemma4:e4b-it-qat",
+            "gemma4:12b-it-qat",
+            "qwen3.5:9b",
+            "qwen3.5:27b",
+        )
+        for model in models:
+            self.assertTrue(is_valid_model(model), model)
+            self.assertEqual(
+                ollama_model_library_url(model),
+                "https://ollama.com/library/" + model.replace(":", "%3A"),
+            )
+        with self.assertRaises(ValueError):
+            ollama_model_library_url("bad model")
+
+    def test_normalize_model_input_accepts_official_commands(self) -> None:
+        self.assertEqual(normalize_model_input("gemma3:1b"), "gemma3:1b")
+        self.assertEqual(normalize_model_input("ollama run gemma3:1b"), "gemma3:1b")
+        self.assertEqual(
+            normalize_model_input("  OLLAMA pull gemma4:e2b-it-qat  "),
+            "gemma4:e2b-it-qat",
+        )
+
+    def test_normalize_model_input_rejects_extra_arguments(self) -> None:
+        for invalid in (
+            "ollama run gemma3:1b --verbose",
+            "ollama run gemma3:1b; whoami",
+            "ollama rm gemma3:1b",
+            "ollama run $(bad)",
+        ):
+            self.assertIsNone(normalize_model_input(invalid), invalid)
 
     def test_model_kind(self) -> None:
         self.assertEqual(model_kind("gpt-oss:120b-cloud"), "Cloudモデル")
@@ -91,6 +225,11 @@ class CoreTests(unittest.TestCase):
         state = parse_codex_state('model = "gpt-5.5"\nmodel_provider = "openai"\n')
         self.assertEqual(state.mode, "normal")
         self.assertEqual(state.model, "gpt-5.5")
+
+    def test_parse_normal_codex_state_without_explicit_provider(self) -> None:
+        state = parse_codex_state('model = "gpt-5.6-sol"\n')
+        self.assertEqual(state.mode, "normal")
+        self.assertEqual(state.model, "gpt-5.6-sol")
 
     def test_parse_ollama_codex_state(self) -> None:
         state = parse_codex_state(
@@ -322,6 +461,41 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(models[0].kind, "Cloud")
         self.assertEqual(models[1].kind, "ローカル")
         self.assertEqual(models[1].size, "4.7 GB")
+
+    def test_parse_ollama_show_and_codex_compatibility(self) -> None:
+        output = (
+            "  Model\n"
+            "    context length      131072\n\n"
+            "  Capabilities\n"
+            "    completion\n"
+            "    tools\n"
+            "    thinking\n\n"
+            "  Parameters\n"
+        )
+        capabilities, context_length = parse_ollama_show(output)
+        self.assertEqual(capabilities, ("completion", "tools", "thinking"))
+        self.assertEqual(context_length, 131072)
+        model = OllamaModel(
+            "gemma4:e2b-it-qat",
+            "id",
+            "4.3 GB",
+            "now",
+            capabilities,
+            context_length,
+        )
+        self.assertTrue(is_codex_compatible_model(model))
+
+    def test_completion_only_model_is_not_codex_compatible(self) -> None:
+        model = OllamaModel(
+            "gemma3:1b",
+            "id",
+            "815 MB",
+            "now",
+            ("completion",),
+            32768,
+        )
+        self.assertFalse(is_codex_compatible_model(model))
+        self.assertEqual(model.codex_status, "Ollama体験用")
 
 
 if __name__ == "__main__":

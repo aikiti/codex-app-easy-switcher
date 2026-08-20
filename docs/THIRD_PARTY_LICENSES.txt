@@ -1,0 +1,84 @@
+Codex App かんたん切り替え 第三者ライブラリ ライセンス通知 / Third-Party License Notices
+==============================================================================
+Generated / 生成日時: 2026-08-19 21:32:45
+Project root / プロジェクトルート: C:\Users\shinc\convert_exe\勉強会\codex-app-easy-switcher
+Distribution folder / 配布フォルダ: C:\Users\shinc\convert_exe\勉強会\codex-app-easy-switcher\dist
+
+--- 注意事項 / Notes ---
+- This document is a technical license audit artifact and is not legal advice.
+- 本文書は技術監査資料であり、最終的な法務判断ではありません。
+- PyInstaller is GPL-licensed, but its bootloader is distributed with the PyInstaller Bootloader Exception, allowing distribution of non-GPL applications built with PyInstaller when the exception terms are followed.
+- pywebview / WebView2 Runtime: not detected in adopted UI frameworks.
+- Font policy: distinguish fonts bundled inside the EXE from OS fonts referenced at runtime. Do not copy OS fonts into redistribution unless their license permits it.
+
+--- 機械学習モデル / ML and CNN Model Usage ---
+実地検索結果: torch / tensorflow / keras / onnx / cv2.dnn / CascadeClassifier / from_pretrained / load_model 等の使用は検出されませんでした。
+Model files: .onnx/.pt/.pth/.h5/.pb/.tflite/.caffemodel/.weights were not found.
+
+Future reference table / 将来追加時の参考:
+| Model family | Typical license note | Commercial redistribution note |
+| --- | --- | --- |
+| EfficientNet | Apache-2.0 implementations common; weights vary | verify implementation and weight source |
+| ResNet | BSD/MIT/Apache implementations common; ImageNet weights vary | verify weight dataset terms |
+| MobileNet | Apache-2.0 TensorFlow models common | verify pretrained weights |
+| SAM | Apache-2.0 for code/model from Meta release | verify exact checkpoint terms |
+| CLIP | MIT for OpenAI CLIP code; weights/model cards apply | verify model and dataset restrictions |
+| Detectron2 | Apache-2.0 | verify model zoo weights |
+| YOLOv3/4/X | Darknet/MIT/GPL variants exist | verify fork and weights |
+| YOLOv5/8/11 | AGPL-3.0 or commercial license from Ultralytics | AGPL warning for closed commercial apps |
+| ImageNet weights | Common but dataset terms are separate | confirm redistribution and use constraints |
+
+--- UI フレームワーク使用状況 / UI Framework Usage ---
+Adopted UI frameworks / 採用UI: not detected from requirements or source scan.
+Not adopted comparison / 未採用UI比較:
+- NiceGUI: MIT
+- PyQt6: GPL/commercial dual license
+- PySide6: LGPLv3/GPLv3
+- pywebview: BSD-3-Clause
+- Streamlit: Apache-2.0
+- Tkinter: Python stdlib
+- PySimpleGUI: commercial/non-open terms vary by version
+Bundled frontend assets implied by UI framework: none detected.
+PyInstaller spec excludes:
+No excludes=[...] entries detected.
+
+--- フォント / Fonts ---
+Bundled or project font files / EXEバンドル候補:
+- No project font files or matplotlib bundled fonts detected.
+OS referenced fonts / OS参照のみ:
+- Windows standard UI fonts such as Yu Gothic, Meiryo, Segoe UI are referenced from OS only unless explicitly bundled.
+
+--- ランタイム / ネイティブバイナリ依存 / Runtime and Native Dependencies ---
+- CPython: PSF License. Include Python license notice when redistributing embedded interpreter or bundled Python runtime.
+- Microsoft VC++ Redistributable: may be required by Python wheels/PyInstaller bundle on Windows; follow Microsoft redistribution terms.
+- Windows API: used by Windows desktop distribution as OS API, not bundled as a third-party library.
+- Edge WebView2 Runtime: not detected.
+- opencv-python FFmpeg/OpenH264: not detected.
+
+--- 監査・運用上の留意事項 / Audit and Operational Notes ---
+GPL / AGPL / SSPL / CC-NC markers: none detected from package license metadata.
+- Trademarks: check app/product names and logos through J-PlatPat and relevant trademark databases before external distribution.
+- Video codec patents: H.264/H.265 may require MPEG LA or other patent pool consideration depending on encoding/decoding and redistribution.
+- Personal data: internal use is generally lower risk, but remove or anonymize personal/customer data before external submission.
+- Crypto export controls: common TLS/crypto modules may fall under ECCN 5D002 with mass-market exceptions; confirm for export-sensitive destinations.
+- Periodic audit: run `pip-licenses --format=json --with-urls` in the release venv before each release and update this file.
+- Distribution duty: keep this THIRD_PARTY_LICENSES.txt bundled with the distributed application.
+Command summary:
+- [NG] find .venv python: .venv not found
+
+--- 主要ライブラリ（直接指定） / Direct Requirements ---
+| Package / パッケージ | Version / バージョン | License / ライセンス | Role / 役割 |
+| --- | --- | --- | --- |
+| (none detected) | - | - | - |
+
+--- 主要な推移的依存 / Main Transitive Bundled Dependencies ---
+PyInstaller spec files: Codex-App-Easy-Switcher-Windows.spec
+collect_all: none detected
+hiddenimports: none detected
+
+| Package / パッケージ | Version / バージョン | License / ライセンス | Source / 根拠 |
+| --- | --- | --- | --- |
+| (none identified) | - | - | - |
+
+--- 各主要ライブラリのライセンス本文 / License Texts for Major Libraries ---
+No installed package LICENSE files were found. Review package metadata manually.
